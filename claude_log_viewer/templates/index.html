@@ -1995,13 +1995,23 @@
             const sessionIds = Object.keys(currentSessions);
             const lastSessionIds = Object.keys(lastSessionStats);
 
-            // Check if todo/plan counts changed for any session
+            // Check if todo/plan data changed for any session (compare file modification timestamps)
             const todoOrPlanChanged = sessionIds.some(id => {
                 const current = currentSessions[id];
                 const last = lastSessionStats[id];
                 if (!last) return true;
-                return (current.todoEntries?.length !== last.todoEntries?.length) ||
-                       (current.planEntries?.length !== last.planEntries?.length);
+
+                // Check if todo file timestamps changed
+                const currentTodoTimestamps = (current.todoEntries || []).map(t => t.timestamp).sort().join(',');
+                const lastTodoTimestamps = (last.todoEntries || []).map(t => t.timestamp).sort().join(',');
+                if (currentTodoTimestamps !== lastTodoTimestamps) return true;
+
+                // Check if plan timestamps changed
+                const currentPlanTimestamps = (current.planEntries || []).map(p => p.timestamp).sort().join(',');
+                const lastPlanTimestamps = (last.planEntries || []).map(p => p.timestamp).sort().join(',');
+                if (currentPlanTimestamps !== lastPlanTimestamps) return true;
+
+                return false;
             });
 
             const needsRebuild = sessionIds.length !== lastSessionIds.length ||
