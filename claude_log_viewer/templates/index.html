@@ -796,9 +796,12 @@
                 <label>Limit:</label>
                 <select id="limitSelect">
                     <option value="50">50</option>
-                    <option value="100" selected>100</option>
-                    <option value="200">200</option>
-                    <option value="500">500</option>
+                    <option value="100" {% if max_entries == 100 %}selected{% endif %}>100</option>
+                    <option value="200" {% if max_entries == 200 %}selected{% endif %}>200</option>
+                    <option value="500" {% if max_entries == 500 %}selected{% endif %}>500</option>
+                    {% if max_entries not in [50, 100, 200, 500] %}
+                    <option value="{{ max_entries }}" selected>{{ max_entries }}</option>
+                    {% endif %}
                 </select>
             </div>
 
@@ -861,7 +864,7 @@
             search: '',
             type: '',
             session: null,
-            limit: 100,
+            limit: {{ max_entries }},
             fields: new Set(['role', 'when', 'content', 'sessionId'])
         };
         let lastSessionStats = {}; // Track previous session stats for incremental updates
@@ -1653,7 +1656,11 @@
 
             let filtered = allEntries;
             if (typeFilter) {
-                filtered = filtered.filter(e => e.type === typeFilter);
+                if (typeFilter === 'tool_result') {
+                    filtered = filtered.filter(e => e.has_tool_results);
+                } else {
+                    filtered = filtered.filter(e => e.type === typeFilter);
+                }
             }
             if (searchTerm) {
                 filtered = filtered.filter(e =>
@@ -2218,7 +2225,12 @@
             let filtered = allEntries;
 
             if (typeFilter) {
-                filtered = filtered.filter(e => e.type === typeFilter);
+                if (typeFilter === 'tool_result') {
+                    // Filter for entries that have tool results
+                    filtered = filtered.filter(e => e.has_tool_results);
+                } else {
+                    filtered = filtered.filter(e => e.type === typeFilter);
+                }
             }
 
             if (searchTerm) {

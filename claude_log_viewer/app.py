@@ -279,6 +279,9 @@ def load_latest_entries(file_path=None):
                             tool_items = extract_tool_items(entry)
                             if tool_items:
                                 entry['tool_items'] = tool_items
+                                # Add a filterable type for tool results
+                                if tool_items.get('tool_results'):
+                                    entry['has_tool_results'] = True
 
                             # Count tokens from actual content
                             try:
@@ -313,7 +316,7 @@ def start_file_watcher():
 @app.route('/')
 def index():
     """Main page"""
-    return render_template('index.html')
+    return render_template('index.html', max_entries=max_entries)
 
 
 @app.route('/api/entries')
