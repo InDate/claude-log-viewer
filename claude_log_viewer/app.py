@@ -25,7 +25,8 @@ CLAUDE_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
 
 # Store latest entries
 latest_entries = []
-max_entries = 500  # Keep last 500 entries in memory
+max_entries = 500  # Keep last 500 entries in memory (default, configurable via CLI)
+file_age_days = 2  # Only load files modified in last N days (default, configurable via CLI)
 
 # Cache for usage data
 usage_cache = {
@@ -250,7 +251,13 @@ def load_latest_entries(file_path=None):
         files = [Path(file_path)]
     else:
         # Recursively find all .jsonl files in all project subdirectories
-        files = list(CLAUDE_PROJECTS_DIR.glob('**/*.jsonl'))
+        all_files = list(CLAUDE_PROJECTS_DIR.glob('**/*.jsonl'))
+
+        # Filter to only files modified in the last N days
+        cutoff_time = time.time() - (file_age_days * 24 * 60 * 60)
+        files = [f for f in all_files if f.stat().st_mtime > cutoff_time]
+
+        print(f"Found {len(files)} file(s) modified in the last {file_age_days} day(s) out of {len(all_files)} total")
 
     entries = []
     for file in files:
@@ -469,6 +476,8 @@ def get_usage_snapshots():
 
 def main():
     """Main entry point for the CLI"""
+    global max_entries, file_age_days
+
     # Parse command line arguments
     parser = argparse.ArgumentParser(
         description='Claude Code Log Viewer - Interactive web-based transcript viewer'
@@ -478,7 +487,23 @@ def main():
         action='store_true',
         help='Reset the database by deleting and recreating it'
     )
+    parser.add_argument(
+        '--days',
+        type=int,
+        default=2,
+        help='Only load files modified in the last N days (default: 2)'
+    )
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=500,
+        help='Maximum number of entries to keep in memory (default: 500)'
+    )
     args = parser.parse_args()
+
+    # Set global configuration from arguments
+    file_age_days = args.days
+    max_entries = args.limit
 
     # Handle database reset
     if args.reset_db:
