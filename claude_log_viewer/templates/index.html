@@ -156,8 +156,8 @@
             padding: 12px;
             border-radius: 4px;
             border-left: 4px solid;
-            cursor: pointer;
             transition: background 0.2s;
+            position: relative;
         }
 
         .session-card:hover {
@@ -167,6 +167,67 @@
         .session-card.selected {
             background: #3e3e42;
             box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+        }
+
+        /* Icon action bar */
+        .session-icon-actions {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            gap: 12px;
+            padding: 0 16px;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.2s ease;
+            background: rgba(0, 0, 0, 0.7);
+            backdrop-filter: blur(4px);
+            border-radius: 4px;
+        }
+
+        .session-card:hover .session-icon-actions {
+            opacity: 1;
+            pointer-events: all;
+        }
+
+        .session-icon-btn {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 4px;
+            padding: 12px 16px;
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            flex: 1;
+            max-width: 120px;
+        }
+
+        .session-icon-btn:hover {
+            background: rgba(255, 255, 255, 0.2);
+            transform: translateY(-2px);
+        }
+
+        .session-icon-btn[data-action="filter"].active {
+            background: rgba(14, 99, 156, 0.8);
+            border: 1px solid rgba(14, 99, 156, 1);
+        }
+
+        .session-icon-btn .icon {
+            font-size: 24px;
+            line-height: 1;
+        }
+
+        .session-icon-btn .label {
+            font-size: 11px;
+            color: #d4d4d4;
+            white-space: nowrap;
+            font-weight: 500;
         }
 
         .session-id {
@@ -859,7 +920,9 @@
         let sessionColors = {}; // Map sessionId to color
         let selectedSession = null; // Currently selected session filter
         let currentPlanNavigation = null; // Track current plan navigation state: { session, currentIndex }
+        let currentTodoNavigation = null; // Track current todo navigation state: { session, currentIndex }
         let renderedEntryIds = new Set(); // Track which entries are already in the DOM
+        let allTodoData = {}; // Store all todo data from API, keyed by sessionId
         let currentFilters = { // Track current filter state
             search: '',
             type: '',
@@ -1065,22 +1128,63 @@
             }
         }
 
-        // Show todo list dialog
-        function showTodoDialog(session) {
+        // Navigate todo (used for keyboard navigation)
+        function navigateTodo(direction) {
+            if (!currentTodoNavigation) return;
+
+            const { session, currentIndex } = currentTodoNavigation;
+            const sortedTodos = [...session.todoEntries].sort((a, b) =>
+                b.timestamp.localeCompare(a.timestamp)
+            );
+
+            let newIndex = currentIndex;
+            if (direction === 'prev' && currentIndex < sortedTodos.length - 1) {
+                newIndex = currentIndex + 1;
+            } else if (direction === 'next' && currentIndex > 0) {
+                newIndex = currentIndex - 1;
+            }
+
+            if (newIndex !== currentIndex) {
+                showTodoDialog(session, newIndex);
+            }
+        }
+
+        // Show todo list dialog with navigation
+        function showTodoDialog(session, todoIndex = 0) {
             const modal = document.getElementById('contentModal');
             const modalContent = document.getElementById('modalContent');
 
-            if (!session.todos || session.todos.length === 0) {
+            if (!session.todoEntries || session.todoEntries.length === 0) {
                 return;
             }
 
-            // Group todos by status
-            const inProgress = session.todos.filter(t => t.status === 'in_progress');
-            const pending = session.todos.filter(t => t.status === 'pending');
-            const completed = session.todos.filter(t => t.status === 'completed');
+            // Sort todos by timestamp (newest first)
+            const sortedTodos = [...session.todoEntries].sort((a, b) =>
+                b.timestamp.localeCompare(a.timestamp)
+            );
 
-            // Build markdown content
-            let markdownContent = `# Todo List - Session ${session.id.substring(0, 8)}\n\n`;
+            // Ensure todoIndex is valid
+            todoIndex = Math.max(0, Math.min(todoIndex, sortedTodos.length - 1));
+
+            // Store current navigation state
+            currentTodoNavigation = {
+                session: session,
+                currentIndex: todoIndex
+            };
+
+            const currentTodoEntry = sortedTodos[todoIndex];
+            const todos = currentTodoEntry.todos;
+
+            // Group todos by status
+            const inProgress = todos.filter(t => t.status === 'in_progress');
+            const pending = todos.filter(t => t.status === 'pending');
+            const completed = todos.filter(t => t.status === 'completed');
+
+            // Build markdown content with navigation info
+            let markdownContent = `# Todo List ${todoIndex + 1} of ${sortedTodos.length} - Session ${session.id.substring(0, 8)}\n\n`;
+            markdownContent += `**Agent:** ${currentTodoEntry.agentId.substring(0, 8)}\n\n`;
+            markdownContent += `**Timestamp:** ${currentTodoEntry.timestamp}\n\n`;
+            markdownContent += '---\n\n';
 
             // In Progress section
             if (inProgress.length > 0) {
@@ -1119,7 +1223,40 @@
 
             // Parse and render markdown
             const htmlContent = md.render(markdownContent);
-            modalContent.innerHTML = htmlContent;
+
+            // Build navigation controls
+            const hasPrev = todoIndex < sortedTodos.length - 1;
+            const hasNext = todoIndex > 0;
+
+            const navControls = `
+                <div class="plan-navigation">
+                    <button class="plan-nav-btn" id="todoPrevBtn" ${!hasPrev ? 'disabled' : ''}>
+                        ← Older
+                    </button>
+                    <span class="plan-counter">${todoIndex + 1} / ${sortedTodos.length}</span>
+                    <button class="plan-nav-btn" id="todoNextBtn" ${!hasNext ? 'disabled' : ''}>
+                        Newer →
+                    </button>
+                </div>
+            `;
+
+            modalContent.innerHTML = navControls + htmlContent;
+
+            // Add event listeners for navigation buttons
+            const prevBtn = document.getElementById('todoPrevBtn');
+            const nextBtn = document.getElementById('todoNextBtn');
+
+            if (prevBtn && hasPrev) {
+                prevBtn.addEventListener('click', () => {
+                    showTodoDialog(session, todoIndex + 1);
+                });
+            }
+
+            if (nextBtn && hasNext) {
+                nextBtn.addEventListener('click', () => {
+                    showTodoDialog(session, todoIndex - 1);
+                });
+            }
 
             // Show modal
             modal.classList.add('active');
@@ -1129,8 +1266,9 @@
         function closeContentDialog() {
             const modal = document.getElementById('contentModal');
             modal.classList.remove('active');
-            // Reset plan navigation state
+            // Reset navigation states
             currentPlanNavigation = null;
+            currentTodoNavigation = null;
         }
 
         // Set up modal event listeners after DOM is ready
@@ -1151,18 +1289,24 @@
                 });
             }
 
-            // Close on Escape key and navigate plans with arrow keys
+            // Close on Escape key and navigate plans/todos with arrow keys
             document.addEventListener('keydown', (e) => {
                 if (e.key === 'Escape') {
                     closeContentDialog();
-                    // Reset plan navigation state when closing modal
-                    currentPlanNavigation = null;
                 } else if (e.key === 'ArrowLeft') {
-                    // Navigate to older plan
-                    navigatePlan('prev');
+                    // Navigate to older plan or todo
+                    if (currentPlanNavigation) {
+                        navigatePlan('prev');
+                    } else if (currentTodoNavigation) {
+                        navigateTodo('prev');
+                    }
                 } else if (e.key === 'ArrowRight') {
-                    // Navigate to newer plan
-                    navigatePlan('next');
+                    // Navigate to newer plan or todo
+                    if (currentPlanNavigation) {
+                        navigatePlan('next');
+                    } else if (currentTodoNavigation) {
+                        navigateTodo('next');
+                    }
                 }
             });
         });
@@ -1172,8 +1316,19 @@
             if (!sessionId) return '#6e7681';
 
             if (!sessionColors[sessionId]) {
-                const index = Object.keys(sessionColors).length % colorPalette.length;
-                sessionColors[sessionId] = colorPalette[index];
+                // Generate unique color using hash of session ID
+                let hash = 0;
+                for (let i = 0; i < sessionId.length; i++) {
+                    hash = ((hash << 5) - hash) + sessionId.charCodeAt(i);
+                    hash = hash & hash; // Convert to 32bit integer
+                }
+
+                // Use hash to generate HSL color
+                const hue = Math.abs(hash) % 360;
+                const saturation = 70; // Keep consistent saturation
+                const lightness = 50;  // Keep consistent lightness
+
+                sessionColors[sessionId] = `hsl(${hue}, ${saturation}%, ${lightness}%)`;
             }
 
             return sessionColors[sessionId];
@@ -1543,8 +1698,27 @@
         // Load initial data
         async function loadEntries() {
             try {
-                const response = await fetch('/api/entries');
-                const data = await response.json();
+                // Fetch entries and todos in parallel
+                const [entriesResponse, todosResponse] = await Promise.all([
+                    fetch('/api/entries'),
+                    fetch('/api/todos')
+                ]);
+
+                const data = await entriesResponse.json();
+                const todosData = await todosResponse.json();
+
+                // Store todo data globally, grouped by session
+                allTodoData = {};
+                if (todosData.todos) {
+                    todosData.todos.forEach(todoFile => {
+                        const sessionId = todoFile.sessionId;
+                        if (!allTodoData[sessionId]) {
+                            allTodoData[sessionId] = [];
+                        }
+                        allTodoData[sessionId].push(todoFile);
+                    });
+                }
+
                 // Unpack all entries
                 allEntries = data.entries.map(unpackEntry);
 
@@ -1701,15 +1875,9 @@
                     sessions[sessionId].tokensUsed += entry.content_tokens;
                 }
 
-                // Extract TodoWrite and ExitPlanMode tool uses
+                // Extract ExitPlanMode tool uses (plans)
                 if (entry.tool_items && entry.tool_items.tool_uses) {
                     entry.tool_items.tool_uses.forEach(toolUse => {
-                        if (toolUse.name === 'TodoWrite' && toolUse.input && toolUse.input.todos) {
-                            sessions[sessionId].todoEntries.push({
-                                timestamp: entry.timestamp,
-                                todos: toolUse.input.todos
-                            });
-                        }
                         if (toolUse.name === 'ExitPlanMode' && toolUse.input && toolUse.input.plan) {
                             sessions[sessionId].planEntries.push({
                                 timestamp: entry.timestamp,
@@ -1726,12 +1894,22 @@
                     session.lastActive = session.timestamps.sort().reverse()[0];
                 }
 
-                // Get latest TodoWrite state (most recent timestamp)
-                if (session.todoEntries.length > 0) {
-                    const latestTodoEntry = session.todoEntries.sort((a, b) =>
-                        b.timestamp.localeCompare(a.timestamp)
-                    )[0];
+                // Get todos from API data instead of JSONL
+                const sessionTodos = allTodoData[session.id] || [];
+                if (sessionTodos.length > 0) {
+                    // Store all todo entries for navigation
+                    session.todoEntries = sessionTodos.map(todoFile => ({
+                        timestamp: todoFile.timestamp,
+                        todos: todoFile.todos,
+                        agentId: todoFile.agentId,
+                        filename: todoFile.filename
+                    }));
 
+                    // Sort by timestamp (newest first)
+                    session.todoEntries.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
+
+                    // Use latest for current display
+                    const latestTodoEntry = session.todoEntries[0];
                     session.todos = latestTodoEntry.todos;
 
                     // Calculate todo stats
@@ -1744,6 +1922,8 @@
 
                     session.todoStats = stats;
                     session.hasTodos = stats.total > 0;
+                } else {
+                    session.todoEntries = [];
                 }
 
                 // Get latest plan (most recent timestamp)
@@ -1839,7 +2019,7 @@
                     const contextClass = contextPct < 70 ? 'low' : (contextPct < 90 ? 'medium' : 'high');
 
                     const todoHTML = session.hasTodos ? `
-                        <div class="session-stat session-todo-summary" data-session-id="${session.id}" style="cursor: pointer;">
+                        <div class="session-stat session-todo-summary" data-session-id="${session.id}">
                             <span class="session-stat-label">Todos:</span>
                             <span class="session-stat-value" style="color: #9d9d9d;">
                                 ${session.todoStats.total} total:
@@ -1850,7 +2030,7 @@
                     ` : '';
 
                     const planHTML = session.hasPlans ? `
-                        <div class="session-stat session-plan-summary" data-session-id="${session.id}" style="cursor: pointer;">
+                        <div class="session-stat session-plan-summary" data-session-id="${session.id}">
                             <span class="session-stat-label">Plans:</span>
                             <span class="session-stat-value" style="color: #9d9d9d;">
                                 ${session.planCount} ${session.planCount === 1 ? 'plan' : 'plans'}
@@ -1859,6 +2039,24 @@
                     ` : '';
 
                     card.innerHTML = `
+                        <div class="session-icon-actions">
+                            <div class="session-icon-btn" data-action="filter" title="Toggle filter">
+                                <div class="icon">🔍</div>
+                                <div class="label">Filter</div>
+                            </div>
+                            ${session.hasPlans ? `
+                            <div class="session-icon-btn" data-action="plans" title="View plans">
+                                <div class="icon">📋</div>
+                                <div class="label">Plans</div>
+                            </div>
+                            ` : ''}
+                            ${session.hasTodos ? `
+                            <div class="session-icon-btn" data-action="todos" title="View todos">
+                                <div class="icon">☑</div>
+                                <div class="label">Todos</div>
+                            </div>
+                            ` : ''}
+                        </div>
                         <div class="session-id">
                             <span class="session-color-badge" style="background: ${color}; color: #fff;">
                                 ${session.id.substring(0, 8)}
@@ -1884,46 +2082,47 @@
                         </div>
                     `;
 
-                    card.addEventListener('click', () => {
-                        if (selectedSession === session.id) {
-                            selectedSession = null;
-                        } else {
-                            selectedSession = session.id;
-                        }
-                        // Update selected state on all cards
-                        container.querySelectorAll('.session-card').forEach(c => {
-                            if (c.dataset.sessionId === selectedSession) {
-                                c.classList.add('selected');
-                            } else {
-                                c.classList.remove('selected');
+                    // Add icon action handlers
+                    const iconButtons = card.querySelectorAll('.session-icon-btn');
+                    iconButtons.forEach(btn => {
+                        btn.addEventListener('click', (e) => {
+                            e.stopPropagation();
+                            const action = btn.dataset.action;
+
+                            if (action === 'filter') {
+                                // Toggle filter
+                                if (selectedSession === session.id) {
+                                    selectedSession = null;
+                                } else {
+                                    selectedSession = session.id;
+                                }
+
+                                // Update selected state and filter button active state on all cards
+                                container.querySelectorAll('.session-card').forEach(c => {
+                                    if (c.dataset.sessionId === selectedSession) {
+                                        c.classList.add('selected');
+                                        c.querySelector('[data-action="filter"]')?.classList.add('active');
+                                    } else {
+                                        c.classList.remove('selected');
+                                        c.querySelector('[data-action="filter"]')?.classList.remove('active');
+                                    }
+                                });
+
+                                renderEntries();
+                            } else if (action === 'plans') {
+                                showPlanDialog(session);
+                            } else if (action === 'todos') {
+                                showTodoDialog(session);
                             }
                         });
-                        renderEntries();
                     });
 
+                    // Set initial active state for filter button if this session is selected
+                    if (selectedSession === session.id) {
+                        card.querySelector('[data-action="filter"]')?.classList.add('active');
+                    }
+
                     container.appendChild(card);
-
-                    // Add click handler for plan summary (prevent session filter toggle)
-                    if (session.hasPlans) {
-                        const planSummary = card.querySelector('.session-plan-summary');
-                        if (planSummary) {
-                            planSummary.addEventListener('click', (e) => {
-                                e.stopPropagation(); // Prevent card click
-                                showPlanDialog(session);
-                            });
-                        }
-                    }
-
-                    // Add click handler for todo summary (prevent session filter toggle)
-                    if (session.hasTodos) {
-                        const todoSummary = card.querySelector('.session-todo-summary');
-                        if (todoSummary) {
-                            todoSummary.addEventListener('click', (e) => {
-                                e.stopPropagation(); // Prevent card click
-                                showTodoDialog(session);
-                            });
-                        }
-                    }
                 });
 
                 lastSessionStats = currentSessions;

@@ -22,6 +22,7 @@ app = Flask(__name__)
 
 # Get the Claude projects directory - monitor all projects
 CLAUDE_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
+CLAUDE_TODOS_DIR = Path.home() / '.claude' / 'todos'
 
 # Store latest entries
 latest_entries = []
@@ -49,6 +50,21 @@ class JSONLHandler(FileSystemEventHandler):
         if event.src_path.endswith('.jsonl'):
             # Reload all files to maintain complete view
             load_latest_entries()
+
+
+class TodoHandler(FileSystemEventHandler):
+    """Watch for changes to todo JSON files"""
+
+    def on_modified(self, event):
+        if event.src_path.endswith('.json'):
+            # Todo files changed, but we don't need to reload here
+            # Frontend polls /api/todos regularly
+            pass
+
+    def on_created(self, event):
+        if event.src_path.endswith('.json'):
+            # New todo file created
+            pass
 
 
 def enrich_content(entry):
@@ -305,10 +321,18 @@ def load_latest_entries(file_path=None):
 
 
 def start_file_watcher():
-    """Start watching all project directories for changes"""
-    event_handler = JSONLHandler()
+    """Start watching all project directories and todos directory for changes"""
     observer = Observer()
-    observer.schedule(event_handler, str(CLAUDE_PROJECTS_DIR), recursive=True)
+
+    # Watch JSONL files in projects directory
+    jsonl_handler = JSONLHandler()
+    observer.schedule(jsonl_handler, str(CLAUDE_PROJECTS_DIR), recursive=True)
+
+    # Watch todo JSON files in todos directory
+    if CLAUDE_TODOS_DIR.exists():
+        todo_handler = TodoHandler()
+        observer.schedule(todo_handler, str(CLAUDE_TODOS_DIR), recursive=False)
+
     observer.start()
     return observer
 
@@ -342,6 +366,66 @@ def refresh():
     """Force refresh all entries"""
     load_latest_entries()
     return jsonify({'status': 'success', 'total': len(latest_entries)})
+
+
+@app.route('/api/todos')
+def get_todos():
+    """Get todo files from ~/.claude/todos directory"""
+    session_id = request.args.get('session_id')
+    todos_dir = Path.home() / '.claude' / 'todos'
+
+    if not todos_dir.exists():
+        return jsonify({'todos': [], 'error': 'Todos directory not found'})
+
+    try:
+        todo_files = []
+
+        if session_id:
+            # Get todos for specific session
+            pattern = f"{session_id}-agent-*.json"
+            files = list(todos_dir.glob(pattern))
+        else:
+            # Get all todo files
+            files = list(todos_dir.glob('*-agent-*.json'))
+
+        for file_path in files:
+            try:
+                # Extract session ID and agent ID from filename
+                # Format: {sessionId}-agent-{agentId}.json
+                filename = file_path.name
+                parts = filename.replace('.json', '').split('-agent-')
+                if len(parts) == 2:
+                    file_session_id = parts[0]
+                    agent_id = parts[1]
+
+                    # Read file content
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        todos = json.loads(f.read())
+
+                    # Get file modification time
+                    mtime = file_path.stat().st_mtime
+                    timestamp = datetime.fromtimestamp(mtime).isoformat()
+
+                    todo_files.append({
+                        'sessionId': file_session_id,
+                        'agentId': agent_id,
+                        'todos': todos if isinstance(todos, list) else [],
+                        'timestamp': timestamp,
+                        'filename': filename
+                    })
+            except Exception as e:
+                print(f"Error reading todo file {file_path}: {e}")
+                continue
+
+        # Sort by timestamp (newest first)
+        todo_files.sort(key=lambda x: x['timestamp'], reverse=True)
+
+        return jsonify({
+            'todos': todo_files,
+            'total': len(todo_files)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e), 'todos': []})
 
 
 def get_oauth_token():
