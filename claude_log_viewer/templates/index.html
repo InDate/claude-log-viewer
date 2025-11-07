@@ -1995,8 +1995,18 @@
             const sessionIds = Object.keys(currentSessions);
             const lastSessionIds = Object.keys(lastSessionStats);
 
+            // Check if todo/plan counts changed for any session
+            const todoOrPlanChanged = sessionIds.some(id => {
+                const current = currentSessions[id];
+                const last = lastSessionStats[id];
+                if (!last) return true;
+                return (current.todoEntries?.length !== last.todoEntries?.length) ||
+                       (current.planEntries?.length !== last.planEntries?.length);
+            });
+
             const needsRebuild = sessionIds.length !== lastSessionIds.length ||
-                !sessionIds.every(id => lastSessionIds.includes(id));
+                !sessionIds.every(id => lastSessionIds.includes(id)) ||
+                todoOrPlanChanged;
 
             if (needsRebuild) {
                 // Full rebuild
