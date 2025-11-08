@@ -39,7 +39,9 @@ usage_cache = {
 # Track previous usage values to detect increments
 previous_usage = {
     'five_hour_used': None,
-    'seven_day_used': None
+    'seven_day_used': None,
+    'five_hour_baseline_timestamp': None,
+    'seven_day_baseline_timestamp': None
 }
 
 
@@ -459,6 +461,38 @@ def get_oauth_token():
         return None
 
 
+def calculate_increment_stats(baseline_timestamp):
+    """
+    Calculate tokens consumed and message count since baseline timestamp.
+
+    Args:
+        baseline_timestamp: ISO timestamp string to calculate from, or None
+
+    Returns:
+        dict with 'tokens' and 'messages' keys
+    """
+    if baseline_timestamp is None:
+        return {'tokens': 0, 'messages': 0}
+
+    total_tokens = 0
+    message_count = 0
+
+    # Query all entries since baseline
+    for entry in latest_entries:
+        entry_timestamp = entry.get('timestamp', '')
+        if entry_timestamp and entry_timestamp >= baseline_timestamp:
+            # Sum content_tokens
+            content_tokens = entry.get('content_tokens', 0)
+            if content_tokens:
+                total_tokens += content_tokens
+            message_count += 1
+
+    return {
+        'tokens': total_tokens,
+        'messages': message_count
+    }
+
+
 def fetch_usage_data():
     """Fetch usage data from Anthropic OAuth API and track increments"""
     global usage_cache, previous_usage
@@ -492,18 +526,38 @@ def fetch_usage_data():
             five_hour_util = data.get('five_hour', {}).get('utilization', 0)
             seven_day_util = data.get('seven_day', {}).get('utilization', 0)
 
-            # Check if usage has increased
+            # Check if usage has increased and which windows changed
             should_snapshot = False
+            five_hour_increased = False
+            seven_day_increased = False
+
             if previous_usage['five_hour_used'] is not None or previous_usage['seven_day_used'] is not None:
-                if (previous_usage['five_hour_used'] is not None and five_hour_util > previous_usage['five_hour_used']) or \
-                   (previous_usage['seven_day_used'] is not None and seven_day_util > previous_usage['seven_day_used']):
+                if previous_usage['five_hour_used'] is not None and five_hour_util > previous_usage['five_hour_used']:
                     should_snapshot = True
+                    five_hour_increased = True
+                if previous_usage['seven_day_used'] is not None and seven_day_util > previous_usage['seven_day_used']:
+                    should_snapshot = True
+                    seven_day_increased = True
 
             # Store snapshot if usage increased
             if should_snapshot:
                 try:
                     five_hour_window = data.get('five_hour', {})
                     seven_day_window = data.get('seven_day', {})
+
+                    # Calculate increment statistics for each window that increased
+                    five_hour_stats = {'tokens': None, 'messages': None}
+                    seven_day_stats = {'tokens': None, 'messages': None}
+
+                    if five_hour_increased:
+                        five_hour_stats = calculate_increment_stats(previous_usage['five_hour_baseline_timestamp'])
+                        # Update baseline for next increment
+                        previous_usage['five_hour_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
+
+                    if seven_day_increased:
+                        seven_day_stats = calculate_increment_stats(previous_usage['seven_day_baseline_timestamp'])
+                        # Update baseline for next increment
+                        previous_usage['seven_day_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
 
                     insert_snapshot(
                         timestamp=datetime.utcnow().isoformat() + 'Z',
@@ -514,15 +568,25 @@ def fetch_usage_data():
                         five_hour_pct=five_hour_util,
                         seven_day_pct=seven_day_util,
                         five_hour_reset=five_hour_window.get('resets_at'),
-                        seven_day_reset=seven_day_window.get('resets_at')
+                        seven_day_reset=seven_day_window.get('resets_at'),
+                        five_hour_tokens_consumed=five_hour_stats['tokens'],
+                        five_hour_messages_count=five_hour_stats['messages'],
+                        seven_day_tokens_consumed=seven_day_stats['tokens'],
+                        seven_day_messages_count=seven_day_stats['messages']
                     )
-                    print(f"📊 Usage snapshot saved: 5h={five_hour_util}%, 7d={seven_day_util}%")
+                    print(f"📊 Usage snapshot saved: 5h={five_hour_util}% ({five_hour_stats['messages']} msgs, {five_hour_stats['tokens']} tokens), 7d={seven_day_util}% ({seven_day_stats['messages']} msgs, {seven_day_stats['tokens']} tokens)")
                 except Exception as e:
                     print(f"Error saving usage snapshot: {e}")
 
             # Update previous usage values
             previous_usage['five_hour_used'] = five_hour_util
             previous_usage['seven_day_used'] = seven_day_util
+
+            # Initialize baselines if this is the first poll
+            if previous_usage['five_hour_baseline_timestamp'] is None:
+                previous_usage['five_hour_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
+            if previous_usage['seven_day_baseline_timestamp'] is None:
+                previous_usage['seven_day_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
 
             # Update cache
             usage_cache['data'] = data

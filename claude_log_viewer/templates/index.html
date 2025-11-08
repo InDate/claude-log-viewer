@@ -807,8 +807,8 @@
 
         .usage-increment-stat {
             display: flex;
-            align-items: center;
-            gap: 10px;
+            flex-direction: column;
+            gap: 4px;
         }
 
         .usage-increment-label {
@@ -822,6 +822,12 @@
             font-weight: 600;
             padding: 4px 8px;
             border-radius: 3px;
+        }
+
+        .usage-increment-meta {
+            font-size: 11px;
+            color: #8d8d8d;
+            font-family: 'Consolas', 'Monaco', monospace;
         }
 
         .usage-increment-time {
@@ -1594,8 +1600,12 @@
                                     <tr style="border-bottom: 2px solid #3e3e42;">
                                         <th style="padding: 10px; text-align: left; color: #9d9d9d;">When</th>
                                         <th style="padding: 10px; text-align: left; color: #9d9d9d;">Timestamp</th>
-                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">5-Hour Window</th>
-                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">7-Day Window</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">5h Util</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">5h Tokens</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">5h Messages</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">7d Util</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">7d Tokens</th>
+                                        <th style="padding: 10px; text-align: right; color: #9d9d9d;">7d Messages</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -1609,6 +1619,13 @@
                         const fiveHourClass = getUsageClass(snapshot.five_hour_pct || 0);
                         const sevenDayClass = getUsageClass(snapshot.seven_day_pct || 0);
 
+                        // Format token/message data (show '—' for null/undefined)
+                        const formatValue = (val) => val !== null && val !== undefined ? formatNumber(val) : '—';
+                        const fiveHourTokens = formatValue(snapshot.five_hour_tokens_consumed);
+                        const fiveHourMessages = formatValue(snapshot.five_hour_messages_count);
+                        const sevenDayTokens = formatValue(snapshot.seven_day_tokens_consumed);
+                        const sevenDayMessages = formatValue(snapshot.seven_day_messages_count);
+
                         tableHTML += `
                             <tr style="border-bottom: 1px solid #2d2d30;">
                                 <td style="padding: 10px; color: #9d9d9d; font-weight: 500;">${when}</td>
@@ -1616,9 +1633,13 @@
                                 <td style="padding: 10px; text-align: right;">
                                     <span class="usage-value ${fiveHourClass}" style="padding: 2px 6px; font-size: 11px;">${fiveHourPct}%</span>
                                 </td>
+                                <td style="padding: 10px; text-align: right; color: #8d8d8d; font-size: 11px;">${fiveHourTokens}</td>
+                                <td style="padding: 10px; text-align: right; color: #8d8d8d; font-size: 11px;">${fiveHourMessages}</td>
                                 <td style="padding: 10px; text-align: right;">
                                     <span class="usage-value ${sevenDayClass}" style="padding: 2px 6px; font-size: 11px;">${sevenDayPct}%</span>
                                 </td>
+                                <td style="padding: 10px; text-align: right; color: #8d8d8d; font-size: 11px;">${sevenDayTokens}</td>
+                                <td style="padding: 10px; text-align: right; color: #8d8d8d; font-size: 11px;">${sevenDayMessages}</td>
                             </tr>
                         `;
                     });
@@ -2232,6 +2253,15 @@
                 const fiveHourClass = getUsageClass(snapshot.five_hour_pct || 0);
                 const sevenDayClass = getUsageClass(snapshot.seven_day_pct || 0);
 
+                // Format tokens and messages for display
+                const formatStat = (tokens, messages) => {
+                    if (tokens === null || tokens === undefined) return '—';
+                    return `${formatNumber(tokens)} tokens | ${messages} ${messages === 1 ? 'message' : 'messages'}`;
+                };
+
+                const fiveHourStats = formatStat(snapshot.five_hour_tokens_consumed, snapshot.five_hour_messages_count);
+                const sevenDayStats = formatStat(snapshot.seven_day_tokens_consumed, snapshot.seven_day_messages_count);
+
                 td.innerHTML = `
                     <div class="usage-increment-container">
                         <div class="usage-increment-icon">📊</div>
@@ -2241,10 +2271,12 @@
                                 <div class="usage-increment-stat">
                                     <span class="usage-increment-label">5-Hour Window:</span>
                                     <span class="usage-increment-value usage-value ${fiveHourClass}">${fiveHourPct}% utilization</span>
+                                    <span class="usage-increment-meta">${fiveHourStats}</span>
                                 </div>
                                 <div class="usage-increment-stat">
                                     <span class="usage-increment-label">7-Day Window:</span>
                                     <span class="usage-increment-value usage-value ${sevenDayClass}">${sevenDayPct}% utilization</span>
+                                    <span class="usage-increment-meta">${sevenDayStats}</span>
                                 </div>
                             </div>
                         </div>

@@ -47,6 +47,10 @@ def init_db():
                 seven_day_pct REAL,
                 five_hour_reset TEXT,
                 seven_day_reset TEXT,
+                five_hour_tokens_consumed INTEGER,
+                five_hour_messages_count INTEGER,
+                seven_day_tokens_consumed INTEGER,
+                seven_day_messages_count INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -103,7 +107,11 @@ def insert_snapshot(
     five_hour_pct: float = None,
     seven_day_pct: float = None,
     five_hour_reset: str = None,
-    seven_day_reset: str = None
+    seven_day_reset: str = None,
+    five_hour_tokens_consumed: int = None,
+    five_hour_messages_count: int = None,
+    seven_day_tokens_consumed: int = None,
+    seven_day_messages_count: int = None
 ) -> int:
     """
     Insert a usage snapshot.
@@ -118,13 +126,17 @@ def insert_snapshot(
                 timestamp, five_hour_used, five_hour_limit,
                 seven_day_used, seven_day_limit,
                 five_hour_pct, seven_day_pct,
-                five_hour_reset, seven_day_reset
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                five_hour_reset, seven_day_reset,
+                five_hour_tokens_consumed, five_hour_messages_count,
+                seven_day_tokens_consumed, seven_day_messages_count
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp, five_hour_used, five_hour_limit,
             seven_day_used, seven_day_limit,
             five_hour_pct, seven_day_pct,
-            five_hour_reset, seven_day_reset
+            five_hour_reset, seven_day_reset,
+            five_hour_tokens_consumed, five_hour_messages_count,
+            seven_day_tokens_consumed, seven_day_messages_count
         ))
         return cursor.lastrowid
 
