@@ -545,17 +545,39 @@ def fetch_usage_data():
                     five_hour_window = data.get('five_hour', {})
                     seven_day_window = data.get('seven_day', {})
 
+                    # Get previous snapshot to calculate running totals
+                    from .database import get_latest_snapshot
+                    prev_snapshot = get_latest_snapshot()
+
                     # Calculate increment statistics for each window that increased
-                    five_hour_stats = {'tokens': None, 'messages': None}
-                    seven_day_stats = {'tokens': None, 'messages': None}
+                    five_hour_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
+                    seven_day_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
 
                     if five_hour_increased:
-                        five_hour_stats = calculate_increment_stats(previous_usage['five_hour_baseline_timestamp'])
+                        delta_stats = calculate_increment_stats(previous_usage['five_hour_baseline_timestamp'])
+                        five_hour_stats['tokens'] = delta_stats['tokens']
+                        five_hour_stats['messages'] = delta_stats['messages']
+
+                        # Calculate running totals: previous total + current delta
+                        prev_total_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
+                        prev_total_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
+                        five_hour_stats['total_tokens'] = (prev_total_tokens or 0) + delta_stats['tokens']
+                        five_hour_stats['total_messages'] = (prev_total_messages or 0) + delta_stats['messages']
+
                         # Update baseline for next increment
                         previous_usage['five_hour_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
 
                     if seven_day_increased:
-                        seven_day_stats = calculate_increment_stats(previous_usage['seven_day_baseline_timestamp'])
+                        delta_stats = calculate_increment_stats(previous_usage['seven_day_baseline_timestamp'])
+                        seven_day_stats['tokens'] = delta_stats['tokens']
+                        seven_day_stats['messages'] = delta_stats['messages']
+
+                        # Calculate running totals: previous total + current delta
+                        prev_total_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
+                        prev_total_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
+                        seven_day_stats['total_tokens'] = (prev_total_tokens or 0) + delta_stats['tokens']
+                        seven_day_stats['total_messages'] = (prev_total_messages or 0) + delta_stats['messages']
+
                         # Update baseline for next increment
                         previous_usage['seven_day_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
 
@@ -572,9 +594,13 @@ def fetch_usage_data():
                         five_hour_tokens_consumed=five_hour_stats['tokens'],
                         five_hour_messages_count=five_hour_stats['messages'],
                         seven_day_tokens_consumed=seven_day_stats['tokens'],
-                        seven_day_messages_count=seven_day_stats['messages']
+                        seven_day_messages_count=seven_day_stats['messages'],
+                        five_hour_tokens_total=five_hour_stats['total_tokens'],
+                        five_hour_messages_total=five_hour_stats['total_messages'],
+                        seven_day_tokens_total=seven_day_stats['total_tokens'],
+                        seven_day_messages_total=seven_day_stats['total_messages']
                     )
-                    print(f"📊 Usage snapshot saved: 5h={five_hour_util}% ({five_hour_stats['messages']} msgs, {five_hour_stats['tokens']} tokens), 7d={seven_day_util}% ({seven_day_stats['messages']} msgs, {seven_day_stats['tokens']} tokens)")
+                    print(f"📊 Usage snapshot saved: 5h={five_hour_util}% ({five_hour_stats['total_messages']} msgs total, +{five_hour_stats['messages']} delta), 7d={seven_day_util}% ({seven_day_stats['total_messages']} msgs total, +{seven_day_stats['messages']} delta)")
                 except Exception as e:
                     print(f"Error saving usage snapshot: {e}")
 

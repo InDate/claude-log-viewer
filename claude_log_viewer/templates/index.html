@@ -1619,12 +1619,18 @@
                         const fiveHourClass = getUsageClass(snapshot.five_hour_pct || 0);
                         const sevenDayClass = getUsageClass(snapshot.seven_day_pct || 0);
 
-                        // Format token/message data (show '—' for null/undefined)
+                        // Format token/message data with "total (+delta)" format
                         const formatValue = (val) => val !== null && val !== undefined ? formatNumber(val) : '—';
-                        const fiveHourTokens = formatValue(snapshot.five_hour_tokens_consumed);
-                        const fiveHourMessages = formatValue(snapshot.five_hour_messages_count);
-                        const sevenDayTokens = formatValue(snapshot.seven_day_tokens_consumed);
-                        const sevenDayMessages = formatValue(snapshot.seven_day_messages_count);
+                        const formatWithDelta = (total, delta) => {
+                            if (total === null || total === undefined) return '—';
+                            if (delta === null || delta === undefined) return formatValue(total);
+                            return `${formatValue(total)} (+${formatValue(delta)})`;
+                        };
+
+                        const fiveHourTokens = formatWithDelta(snapshot.five_hour_tokens_total, snapshot.five_hour_tokens_consumed);
+                        const fiveHourMessages = formatWithDelta(snapshot.five_hour_messages_total, snapshot.five_hour_messages_count);
+                        const sevenDayTokens = formatWithDelta(snapshot.seven_day_tokens_total, snapshot.seven_day_tokens_consumed);
+                        const sevenDayMessages = formatWithDelta(snapshot.seven_day_messages_total, snapshot.seven_day_messages_count);
 
                         tableHTML += `
                             <tr style="border-bottom: 1px solid #2d2d30;">
@@ -2253,14 +2259,26 @@
                 const fiveHourClass = getUsageClass(snapshot.five_hour_pct || 0);
                 const sevenDayClass = getUsageClass(snapshot.seven_day_pct || 0);
 
-                // Format tokens and messages for display
-                const formatStat = (tokens, messages) => {
-                    if (tokens === null || tokens === undefined) return '—';
-                    return `${formatNumber(tokens)} tokens | ${messages} ${messages === 1 ? 'message' : 'messages'}`;
+                // Format tokens and messages for display with "total (+delta)" format
+                const formatStat = (totalTokens, totalMessages, deltaTokens, deltaMessages) => {
+                    if (totalTokens === null || totalTokens === undefined) return '—';
+                    const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokens)})`;
+                    const messagesStr = `${totalMessages} (+${deltaMessages})`;
+                    return `${tokensStr} tokens | ${messagesStr} ${totalMessages === 1 ? 'message' : 'messages'}`;
                 };
 
-                const fiveHourStats = formatStat(snapshot.five_hour_tokens_consumed, snapshot.five_hour_messages_count);
-                const sevenDayStats = formatStat(snapshot.seven_day_tokens_consumed, snapshot.seven_day_messages_count);
+                const fiveHourStats = formatStat(
+                    snapshot.five_hour_tokens_total,
+                    snapshot.five_hour_messages_total,
+                    snapshot.five_hour_tokens_consumed,
+                    snapshot.five_hour_messages_count
+                );
+                const sevenDayStats = formatStat(
+                    snapshot.seven_day_tokens_total,
+                    snapshot.seven_day_messages_total,
+                    snapshot.seven_day_tokens_consumed,
+                    snapshot.seven_day_messages_count
+                );
 
                 td.innerHTML = `
                     <div class="usage-increment-container">

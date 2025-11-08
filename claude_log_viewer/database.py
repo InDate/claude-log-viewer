@@ -51,6 +51,10 @@ def init_db():
                 five_hour_messages_count INTEGER,
                 seven_day_tokens_consumed INTEGER,
                 seven_day_messages_count INTEGER,
+                five_hour_tokens_total INTEGER,
+                five_hour_messages_total INTEGER,
+                seven_day_tokens_total INTEGER,
+                seven_day_messages_total INTEGER,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -111,7 +115,11 @@ def insert_snapshot(
     five_hour_tokens_consumed: int = None,
     five_hour_messages_count: int = None,
     seven_day_tokens_consumed: int = None,
-    seven_day_messages_count: int = None
+    seven_day_messages_count: int = None,
+    five_hour_tokens_total: int = None,
+    five_hour_messages_total: int = None,
+    seven_day_tokens_total: int = None,
+    seven_day_messages_total: int = None
 ) -> int:
     """
     Insert a usage snapshot.
@@ -128,15 +136,19 @@ def insert_snapshot(
                 five_hour_pct, seven_day_pct,
                 five_hour_reset, seven_day_reset,
                 five_hour_tokens_consumed, five_hour_messages_count,
-                seven_day_tokens_consumed, seven_day_messages_count
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                seven_day_tokens_consumed, seven_day_messages_count,
+                five_hour_tokens_total, five_hour_messages_total,
+                seven_day_tokens_total, seven_day_messages_total
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp, five_hour_used, five_hour_limit,
             seven_day_used, seven_day_limit,
             five_hour_pct, seven_day_pct,
             five_hour_reset, seven_day_reset,
             five_hour_tokens_consumed, five_hour_messages_count,
-            seven_day_tokens_consumed, seven_day_messages_count
+            seven_day_tokens_consumed, seven_day_messages_count,
+            five_hour_tokens_total, five_hour_messages_total,
+            seven_day_tokens_total, seven_day_messages_total
         ))
         return cursor.lastrowid
 
