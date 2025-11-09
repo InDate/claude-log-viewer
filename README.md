@@ -71,3 +71,12 @@ The viewer will automatically load JSONL files from your Claude projects directo
 - Uses Watchdog for file system monitoring
 - Displays up to 500 most recent entries
 - Reads all `.jsonl` files in the Claude projects directory
+
+
+## New Features
+- Detect Branching and Update Active Sessions to select specific branch
+- Delete sessions from web interface and remove files
+- Resume the session from web interface (resume/continue on CC is confusing)
+- Tools results should be parsed as markdown
+- Load the image paths in the session
+- Rename sessions to friendly names.

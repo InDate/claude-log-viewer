@@ -505,13 +505,18 @@ def get_todos():
                     mtime = file_path.stat().st_mtime
                     timestamp = datetime.fromtimestamp(mtime).isoformat()
 
-                    todo_files.append({
-                        'sessionId': file_session_id,
-                        'agentId': agent_id,
-                        'todos': todos if isinstance(todos, list) else [],
-                        'timestamp': timestamp,
-                        'filename': filename
-                    })
+                    # Normalize todos to list
+                    todos_list = todos if isinstance(todos, list) else []
+
+                    # Only include files with non-empty todos (skip empty arrays)
+                    if len(todos_list) > 0:
+                        todo_files.append({
+                            'sessionId': file_session_id,
+                            'agentId': agent_id,
+                            'todos': todos_list,
+                            'timestamp': timestamp,
+                            'filename': filename
+                        })
             except Exception as e:
                 print(f"Error reading todo file {file_path}: {e}")
                 continue
