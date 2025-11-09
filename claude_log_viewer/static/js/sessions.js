@@ -84,8 +84,8 @@ export function getSessionStats() {
             // Sort by timestamp (newest first)
             session.todoEntries.sort((a, b) => b.timestamp.localeCompare(a.timestamp));
 
-            // Use latest for current display
-            const latestTodoEntry = session.todoEntries[0];
+            // Use latest entry with non-empty todos, fallback to first entry
+            const latestTodoEntry = session.todoEntries.find(e => e.todos && e.todos.length > 0) || session.todoEntries[0];
             session.todos = latestTodoEntry.todos;
 
             // Calculate todo stats

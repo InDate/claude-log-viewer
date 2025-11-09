@@ -55,13 +55,21 @@ function formatUsageSnapshot(snapshot) {
 // Load initial data
 export async function loadEntries() {
     try {
-        // Fetch entries and todos in parallel
-        const [entriesResponse, todosResponse] = await Promise.all([
-            fetch('/api/entries'),
-            fetch('/api/todos')
-        ]);
-
+        // First fetch entries to determine active sessions
+        const entriesResponse = await fetch('/api/entries');
         const data = await entriesResponse.json();
+
+        // Unpack all entries
+        let entries = data.entries.map(unpackEntry);
+
+        // Get unique session IDs from entries
+        const sessionIds = [...new Set(entries.map(e => e.sessionId).filter(id => id))];
+
+        // Fetch todos only for active sessions
+        const todosUrl = sessionIds.length > 0
+            ? `/api/todos?sessions=${sessionIds.join(',')}`
+            : '/api/todos';
+        const todosResponse = await fetch(todosUrl);
         const todosData = await todosResponse.json();
 
         // Store todo data globally, grouped by session
@@ -76,9 +84,6 @@ export async function loadEntries() {
             });
         }
         setAllTodoData(todoData);
-
-        // Unpack all entries
-        let entries = data.entries.map(unpackEntry);
 
         // Fetch and merge usage snapshots
         const snapshots = await fetchUsageSnapshots();

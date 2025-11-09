@@ -463,6 +463,7 @@ def refresh():
 def get_todos():
     """Get todo files from ~/.claude/todos directory"""
     session_id = request.args.get('session_id')
+    sessions_param = request.args.get('sessions')  # Comma-separated session IDs
     todos_dir = Path.home() / '.claude' / 'todos'
 
     if not todos_dir.exists():
@@ -471,8 +472,15 @@ def get_todos():
     try:
         todo_files = []
 
-        if session_id:
-            # Get todos for specific session
+        if sessions_param:
+            # Get todos for multiple sessions (comma-separated)
+            session_ids = [sid.strip() for sid in sessions_param.split(',')]
+            files = []
+            for sid in session_ids:
+                pattern = f"{sid}-agent-*.json"
+                files.extend(list(todos_dir.glob(pattern)))
+        elif session_id:
+            # Get todos for specific session (legacy support)
             pattern = f"{session_id}-agent-*.json"
             files = list(todos_dir.glob(pattern))
         else:
