@@ -498,6 +498,16 @@ def refresh():
     return jsonify({'status': 'success', 'total': len(latest_entries)})
 
 
+@app.route('/screenshots/<path:filepath>')
+def serve_screenshot(filepath):
+    """Serve screenshot files from project's .claude/screenshots directory"""
+    from flask import send_from_directory
+    # Use project directory's .claude/screenshots, not home directory
+    project_dir = Path(__file__).parent.parent  # Go up from app.py to project root
+    screenshots_dir = project_dir / '.claude' / 'screenshots'
+    return send_from_directory(screenshots_dir, filepath)
+
+
 @app.route('/api/todos')
 def get_todos():
     """Get todo files from ~/.claude/todos directory"""

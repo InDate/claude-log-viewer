@@ -213,3 +213,59 @@
     border-top: 1px solid #3e3e42;
     margin: 20px 0;
 }
+
+.modal-content details {
+    margin: 10px 0;
+    padding: 10px;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+}
+
+.modal-content summary {
+    cursor: pointer;
+    font-weight: 600;
+    color: #9d9d9d;
+    user-select: none;
+    padding: 5px;
+}
+
+.modal-content summary:hover {
+    color: #fff;
+}
+
+/* Tool result images */
+.modal-content .tool-result-image {
+    max-width: 100%;
+    height: auto;
+    margin: 15px 0;
+    border-radius: 4px;
+    border: 1px solid #3e3e42;
+    display: block;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.modal-content .tool-result-image:hover {
+    border-color: #007acc;
+    cursor: zoom-in;
+}
+
+/* Images extracted from text content */
+.modal-content .tool-result-image-from-text {
+    margin-top: 10px;
+    border-left: 3px solid #007acc;
+}
+
+.modal-content .tool-result-image-from-text:hover {
+    border-left-color: #0098ff;
+}
+
+.modal-content .tool-result-image-error {
+    padding: 15px;
+    margin: 15px 0;
+    background: rgba(207, 34, 46, 0.1);
+    border: 1px solid #f97583;
+    border-radius: 4px;
+    color: #f97583;
+    font-size: 13px;
+}
