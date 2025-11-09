@@ -169,7 +169,7 @@ def get_snapshots_in_range(start_time: str, end_time: str) -> List[Dict[str, Any
         cursor.execute("""
             SELECT * FROM usage_snapshots
             WHERE timestamp >= ? AND timestamp <= ?
-            ORDER BY timestamp ASC
+            ORDER BY timestamp DESC
         """, (start_time, end_time))
 
         rows = cursor.fetchall()

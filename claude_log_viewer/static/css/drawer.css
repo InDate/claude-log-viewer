@@ -1,0 +1,355 @@
+/* Footer Bar and Drawer Styles */
+
+.footer-bar {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 70px;
+    background: #1a1a1a;
+    border-top: 1px solid #333;
+    z-index: 900;
+    box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.footer-content {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    height: 100%;
+    padding: 12px 20px;
+    max-width: 100%;
+    margin: 0 auto;
+}
+
+.footer-left {
+    flex: 1;
+}
+
+.footer-right {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+.footer-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: #2d2d2d;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.footer-btn:hover {
+    background: #3d3d3d;
+    border-color: #666;
+}
+
+.footer-btn .icon {
+    font-size: 16px;
+}
+
+.drawer-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.6);
+    z-index: 950;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s ease, visibility 0.3s ease;
+}
+
+.drawer-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.drawer {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 70vh;
+    background: #1e1e1e;
+    border-top: 2px solid #444;
+    border-radius: 16px 16px 0 0;
+    box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.5);
+    z-index: 1000;
+    transform: translateY(100%);
+    transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    display: flex;
+    flex-direction: column;
+}
+
+.drawer.active {
+    transform: translateY(0);
+}
+
+.drawer-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 20px 24px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.drawer-header h3 {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: #e0e0e0;
+}
+
+.drawer-close {
+    background: none;
+    border: none;
+    color: #9d9d9d;
+    font-size: 32px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.drawer-close:hover {
+    background: #333;
+    color: #fff;
+}
+
+.drawer-preview {
+    padding: 16px 24px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+    background: #252525;
+}
+
+.preview-label {
+    font-size: 11px;
+    color: #888;
+    margin-bottom: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.preview-columns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-height: 36px;
+}
+
+.column-chip {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    background: #3d3d3d;
+    border: 1px solid #555;
+    border-radius: 16px;
+    font-size: 12px;
+    color: #e0e0e0;
+    cursor: grab;
+    user-select: none;
+    transition: all 0.2s ease;
+}
+
+.column-chip:hover {
+    background: #4d4d4d;
+    border-color: #666;
+}
+
+.column-chip.dragging {
+    opacity: 0.5;
+    cursor: grabbing;
+}
+
+.column-chip.drag-over {
+    transform: translateX(4px);
+    border-color: #4a9eff;
+}
+
+.column-chip .drag-handle {
+    color: #666;
+    font-size: 14px;
+    cursor: grab;
+}
+
+.column-chip .remove-btn {
+    color: #888;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 2px;
+    border-radius: 3px;
+    transition: all 0.2s ease;
+}
+
+.column-chip .remove-btn:hover {
+    color: #ff6b6b;
+    background: #333;
+}
+
+.drawer-search {
+    padding: 16px 24px;
+    border-bottom: 1px solid #333;
+    flex-shrink: 0;
+}
+
+.drawer-search input {
+    width: 100%;
+    padding: 10px 14px;
+    background: #2d2d2d;
+    border: 1px solid #444;
+    border-radius: 6px;
+    color: #e0e0e0;
+    font-size: 14px;
+    outline: none;
+    transition: border-color 0.2s ease;
+}
+
+.drawer-search input:focus {
+    border-color: #4a9eff;
+}
+
+.drawer-search input::placeholder {
+    color: #666;
+}
+
+.drawer-body {
+    padding: 24px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Field selector styles inside drawer */
+.drawer-body .field-selector {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 12px;
+}
+
+.drawer-body .field-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+    padding: 12px;
+    background: #2d2d2d;
+    border: 1px solid #444;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.drawer-body .field-item:hover {
+    background: #3d3d3d;
+    border-color: #666;
+}
+
+.drawer-body .field-item input[type="checkbox"] {
+    cursor: pointer;
+    width: 16px;
+    height: 16px;
+    margin-top: 2px;
+    flex-shrink: 0;
+}
+
+.drawer-body .field-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.drawer-body .field-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: #e0e0e0;
+    margin-bottom: 4px;
+}
+
+.drawer-body .field-item input[type="checkbox"]:checked ~ .field-info .field-name {
+    color: #4a9eff;
+}
+
+.drawer-body .field-example {
+    font-size: 12px;
+    color: #888;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    cursor: pointer;
+    transition: color 0.2s ease;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.drawer-body .field-example:hover {
+    color: #aaa;
+}
+
+.drawer-body .field-example .expand-icon {
+    font-size: 10px;
+    color: #666;
+    flex-shrink: 0;
+}
+
+.drawer-body .field-item.expanded .field-example {
+    white-space: normal;
+    overflow: visible;
+}
+
+.drawer-body .field-example-content {
+    flex: 1;
+    min-width: 0;
+}
+
+.drawer-body .field-example-expanded {
+    margin-top: 8px;
+    padding: 12px;
+    background: #252525;
+    border: 1px solid #333;
+    border-radius: 4px;
+    font-size: 13px;
+    color: #ccc;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.6;
+}
+
+.drawer-body .field-example-expanded pre {
+    background: #1a1a1a;
+    padding: 8px;
+    border-radius: 4px;
+    overflow-x: auto;
+}
+
+.drawer-body .field-example-expanded code {
+    font-family: 'Monaco', 'Menlo', 'Consolas', monospace;
+    font-size: 12px;
+}
+
+.drawer-body .field-example-expanded p {
+    margin: 0 0 8px 0;
+}
+
+.drawer-body .field-example-expanded p:last-child {
+    margin-bottom: 0;
+}

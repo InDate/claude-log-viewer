@@ -1,14 +1,162 @@
 // Entry rendering and field selection
 
-import { allEntries, selectedFields, currentFilters, selectedSession, renderedEntryIds, knownFields } from './state.js';
+import { allEntries, selectedFields, pendingSelectedFields, currentFilters, selectedSession, renderedEntryIds, knownFields, saveSelectedFields, setPendingSelectedFields } from './state.js';
 import { getEntryId, getSessionColor, truncateContent, formatRelativeTime, copyToClipboard, formatNumber, formatTimestamp, getUsageClass } from './utils.js';
 import { showContentDialog, showToolDetailsDialog } from './modals.js';
 import { updateStats } from './sessions.js';
 
+// Cache for field examples (performance optimization)
+let fieldExamplesCache = new Map();
+
+// Build field examples cache in a single pass through entries
+function buildFieldExamplesCache() {
+    fieldExamplesCache.clear();
+
+    // Collect all fields first
+    const allFields = new Set();
+    allEntries.forEach(entry => {
+        Object.keys(entry).forEach(key => allFields.add(key));
+    });
+
+    // Add virtual fields
+    allFields.add('when');
+    allFields.add('tokens');
+
+    // Find examples in single pass through entries
+    const fieldsFound = new Set();
+
+    for (const entry of allEntries) {
+        for (const field of allFields) {
+            if (!fieldExamplesCache.has(field)) {
+                const value = entry[field];
+                if (value !== null && value !== undefined && value !== '') {
+                    const str = typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+                    fieldExamplesCache.set(field, {
+                        full: str,
+                        truncated: str.length > 60 ? str.substring(0, 60) + '...' : str
+                    });
+                    fieldsFound.add(field);
+
+                    // Early exit if we found examples for all fields
+                    if (fieldsFound.size === allFields.size) {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
+    // Add empty examples for fields without values
+    for (const field of allFields) {
+        if (!fieldExamplesCache.has(field)) {
+            fieldExamplesCache.set(field, { full: '', truncated: '' });
+        }
+    }
+}
+
+// Get example value for a field (from cache)
+function getFieldExample(field) {
+    return fieldExamplesCache.get(field) || { full: '', truncated: '' };
+}
+
+// Clear cache (called when entries change)
+export function clearFieldExamplesCache() {
+    fieldExamplesCache.clear();
+}
+
+// Render column preview chips with drag-and-drop
+export function renderColumnPreview() {
+    const container = document.getElementById('previewColumns');
+    container.innerHTML = '';
+
+    pendingSelectedFields.forEach((field, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'column-chip';
+        chip.draggable = true;
+        chip.dataset.field = field;
+        chip.dataset.index = index;
+
+        // Drag handle icon
+        const dragHandle = document.createElement('span');
+        dragHandle.className = 'drag-handle';
+        dragHandle.textContent = '⋮⋮';
+
+        // Field name
+        const fieldName = document.createElement('span');
+        fieldName.textContent = field;
+
+        // Remove button
+        const removeBtn = document.createElement('span');
+        removeBtn.className = 'remove-btn';
+        removeBtn.textContent = '×';
+        removeBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const newPending = pendingSelectedFields.filter(f => f !== field);
+            setPendingSelectedFields(newPending);
+            renderColumnPreview();
+            renderFieldSelector(); // Update checkboxes
+        });
+
+        chip.appendChild(dragHandle);
+        chip.appendChild(fieldName);
+        chip.appendChild(removeBtn);
+
+        // Drag event handlers
+        chip.addEventListener('dragstart', (e) => {
+            chip.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+            e.dataTransfer.setData('text/plain', index);
+        });
+
+        chip.addEventListener('dragend', () => {
+            chip.classList.remove('dragging');
+            // Remove all drag-over classes
+            document.querySelectorAll('.column-chip').forEach(c => c.classList.remove('drag-over'));
+        });
+
+        chip.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+
+            const draggingChip = container.querySelector('.dragging');
+            if (draggingChip && draggingChip !== chip) {
+                chip.classList.add('drag-over');
+            }
+        });
+
+        chip.addEventListener('dragleave', () => {
+            chip.classList.remove('drag-over');
+        });
+
+        chip.addEventListener('drop', (e) => {
+            e.preventDefault();
+            chip.classList.remove('drag-over');
+
+            const fromIndex = parseInt(e.dataTransfer.getData('text/plain'));
+            const toIndex = parseInt(chip.dataset.index);
+
+            if (fromIndex !== toIndex) {
+                const newPending = [...pendingSelectedFields];
+                const [movedField] = newPending.splice(fromIndex, 1);
+                newPending.splice(toIndex, 0, movedField);
+                setPendingSelectedFields(newPending);
+                renderColumnPreview();
+            }
+        });
+
+        container.appendChild(chip);
+    });
+}
+
 // Render field selector
-export function renderFieldSelector() {
+export function renderFieldSelector(searchTerm = '') {
     const container = document.getElementById('fieldSelector');
     container.innerHTML = '';
+
+    // Build cache if empty (performance optimization)
+    if (fieldExamplesCache.size === 0) {
+        buildFieldExamplesCache();
+    }
 
     // Get all unique fields from unpacked entries
     const allFields = new Set();
@@ -20,44 +168,138 @@ export function renderFieldSelector() {
     allFields.add('when');
     allFields.add('tokens');
 
-    const commonFields = ['role', 'when', 'timestamp', '_file', 'content', 'content_tokens', 'tokens', 'input_tokens', 'output_tokens', 'sessionId', 'type', 'uuid', 'isSidechain', 'parentUuid', 'model', 'stop_reason', 'message', 'content_full'];
+    // Sort alphabetically
+    const sortedFields = Array.from(allFields).sort((a, b) => a.localeCompare(b));
 
-    // Add common fields first
-    commonFields.forEach(field => {
-        if (allFields.has(field)) {
-            container.appendChild(createFieldCheckbox(field));
-        }
-    });
+    // Filter by search term
+    const fieldsWithExamples = sortedFields.map(field => ({
+        name: field,
+        example: getFieldExample(field)
+    }));
 
-    // Add remaining fields
-    Array.from(allFields).filter(f => !commonFields.includes(f)).forEach(field => {
-        container.appendChild(createFieldCheckbox(field));
+    const filteredFields = searchTerm
+        ? fieldsWithExamples.filter(({ name, example }) => {
+            const term = searchTerm.toLowerCase();
+            return name.toLowerCase().includes(term) ||
+                   example.full.toLowerCase().includes(term) ||
+                   example.truncated.toLowerCase().includes(term);
+        })
+        : fieldsWithExamples;
+
+    // Render filtered fields
+    filteredFields.forEach(({ name, example }) => {
+        container.appendChild(createFieldCheckbox(name, example));
     });
 }
 
-function createFieldCheckbox(field) {
+function createFieldCheckbox(field, example) {
     const div = document.createElement('div');
-    div.className = 'field-checkbox';
+    div.className = 'field-item';
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
     checkbox.id = `field-${field}`;
-    checkbox.checked = selectedFields.has(field);
+    checkbox.checked = pendingSelectedFields.includes(field);
     checkbox.addEventListener('change', () => {
+        const newPending = [...pendingSelectedFields];
         if (checkbox.checked) {
-            selectedFields.add(field);
+            if (!newPending.includes(field)) {
+                newPending.push(field);
+            }
         } else {
-            selectedFields.delete(field);
+            const index = newPending.indexOf(field);
+            if (index > -1) {
+                newPending.splice(index, 1);
+            }
         }
-        renderEntries();
+        setPendingSelectedFields(newPending);
+        renderColumnPreview(); // Update preview chips
     });
 
-    const label = document.createElement('label');
-    label.htmlFor = `field-${field}`;
-    label.textContent = field;
+    const fieldInfo = document.createElement('div');
+    fieldInfo.className = 'field-info';
+
+    const fieldName = document.createElement('div');
+    fieldName.className = 'field-name';
+    fieldName.textContent = field;
+
+    const fieldExample = document.createElement('div');
+    fieldExample.className = 'field-example';
+
+    const expandIcon = document.createElement('span');
+    expandIcon.className = 'expand-icon';
+    expandIcon.textContent = '▶';
+
+    const exampleContent = document.createElement('span');
+    exampleContent.className = 'field-example-content';
+    exampleContent.textContent = example.truncated || '(no example available)';
+    exampleContent.title = example.full; // Show full text on hover
+
+    fieldExample.appendChild(expandIcon);
+    fieldExample.appendChild(exampleContent);
+
+    fieldInfo.appendChild(fieldName);
+    fieldInfo.appendChild(fieldExample);
 
     div.appendChild(checkbox);
-    div.appendChild(label);
+    div.appendChild(fieldInfo);
+
+    // Handle field expansion
+    let isExpanded = false;
+    let expandedDiv = null;
+
+    fieldExample.addEventListener('click', (e) => {
+        e.stopPropagation();
+        isExpanded = !isExpanded;
+
+        if (isExpanded) {
+            div.classList.add('expanded');
+            expandIcon.textContent = '▼';
+
+            // Create expanded markdown view
+            if (!expandedDiv) {
+                expandedDiv = document.createElement('div');
+                expandedDiv.className = 'field-example-expanded';
+
+                // Render as markdown
+                const md = window.markdownit({
+                    highlight: function (str, lang) {
+                        if (lang && hljs.getLanguage(lang)) {
+                            try {
+                                return hljs.highlight(str, { language: lang }).value;
+                            } catch (__) {}
+                        }
+                        return '';
+                    }
+                });
+
+                try {
+                    expandedDiv.innerHTML = md.render(example.full);
+                } catch (e) {
+                    // Fall back to plain text if markdown fails
+                    expandedDiv.textContent = example.full;
+                }
+
+                fieldInfo.appendChild(expandedDiv);
+            } else {
+                expandedDiv.style.display = 'block';
+            }
+        } else {
+            div.classList.remove('expanded');
+            expandIcon.textContent = '▶';
+            if (expandedDiv) {
+                expandedDiv.style.display = 'none';
+            }
+        }
+    });
+
+    // Make entire div clickable for checkbox (but not example)
+    div.addEventListener('click', (e) => {
+        if (e.target !== checkbox && !fieldExample.contains(e.target)) {
+            checkbox.click();
+        }
+    });
+
     return div;
 }
 
@@ -67,9 +309,9 @@ function filtersChanged() {
     const searchTerm = document.getElementById('searchInput').value.toLowerCase();
     const limit = parseInt(document.getElementById('limitSelect').value);
 
-    // Check if selected fields changed
-    const fieldsChanged = currentFilters.fields.size !== selectedFields.size ||
-        ![...selectedFields].every(f => currentFilters.fields.has(f));
+    // Check if selected fields changed (Array comparison)
+    const fieldsChanged = currentFilters.fields.length !== selectedFields.length ||
+        !selectedFields.every((f, i) => currentFilters.fields[i] === f);
 
     return currentFilters.search !== searchTerm ||
            currentFilters.type !== typeFilter ||
@@ -84,7 +326,7 @@ function updateFilterState() {
     currentFilters.type = document.getElementById('typeFilter').value;
     currentFilters.session = selectedSession;
     currentFilters.limit = parseInt(document.getElementById('limitSelect').value);
-    currentFilters.fields = new Set(selectedFields);
+    currentFilters.fields = [...selectedFields]; // Store copy of Array
 }
 
 // Create a table row for an entry
@@ -98,7 +340,7 @@ function createEntryRow(entry) {
 
         // Create a single cell that spans all columns
         const td = document.createElement('td');
-        td.colSpan = selectedFields.size;
+        td.colSpan = selectedFields.length;
         td.className = 'usage-increment-cell';
 
         const snapshot = entry.snapshot;

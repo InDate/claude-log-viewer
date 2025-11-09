@@ -1,25 +1,12 @@
 /* Usage dashboard and increment rows */
 
-.usage-dashboard {
-    background: #2d2d30;
-    padding: 10px 20px;
-    border-top: 1px solid #3e3e42;
-    position: fixed;
-    bottom: 0;
-    left: 0;
-    right: 0;
-    z-index: 100;
-}
-
-.usage-dashboard h3 {
-    display: none;
-}
+/* Removed - usage now integrated into footer-bar */
+/* .usage-dashboard styles no longer needed */
 
 .usage-grid {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    display: flex;
     gap: 12px;
-    max-width: 600px;
+    align-items: center;
 }
 
 .usage-item {

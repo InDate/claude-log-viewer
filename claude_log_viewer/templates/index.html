@@ -62,10 +62,6 @@
             </div>
         </div>
 
-        <div class="field-selector" id="fieldSelector">
-            <!-- Populated by JS -->
-        </div>
-
         <div class="stats" id="stats">Loading...</div>
 
         <div class="chat-summary" id="chatSummary">
@@ -82,12 +78,6 @@
         </div>
     </div>
 
-    <div class="usage-dashboard" id="usageDashboard">
-        <div class="usage-grid" id="usageGrid">
-            <!-- Populated by JS -->
-        </div>
-    </div>
-
     <!-- Modal Dialog -->
     <div class="modal-overlay" id="contentModal">
         <div class="modal-dialog">
@@ -98,6 +88,44 @@
             <div class="modal-body">
                 <div class="modal-content" id="modalContent"></div>
             </div>
+        </div>
+    </div>
+
+    <!-- Footer Bar -->
+    <div class="footer-bar">
+        <div class="footer-content">
+            <div class="footer-left">
+                <div class="usage-grid" id="usageGrid">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+            <div class="footer-right">
+                <button id="fieldSelectorBtn" class="footer-btn" title="Configure table columns">
+                    <span class="icon">☰</span>
+                    <span class="label">Columns</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Field Selector Drawer -->
+    <div class="drawer-overlay" id="drawerOverlay"></div>
+    <div class="drawer" id="fieldSelectorDrawer">
+        <div class="drawer-header">
+            <h3>Select Table Columns</h3>
+            <button class="drawer-close" id="drawerClose">&times;</button>
+        </div>
+        <div class="drawer-preview">
+            <div class="preview-label">Selected Columns (drag to reorder):</div>
+            <div class="preview-columns" id="previewColumns">
+                <!-- Populated by JS -->
+            </div>
+        </div>
+        <div class="drawer-search">
+            <input type="text" id="fieldSearch" placeholder="Search fields or examples..." />
+        </div>
+        <div class="drawer-body" id="fieldSelector">
+            <!-- Populated by JS -->
         </div>
     </div>
 

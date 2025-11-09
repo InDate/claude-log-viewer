@@ -434,12 +434,51 @@ def index():
     return render_template('index.html', max_entries=max_entries)
 
 
+def format_usage_snapshot(snapshot):
+    """Format usage snapshot for display (mirrors frontend logic)"""
+    five_hour_pct = snapshot.get('five_hour_pct', 0) or 0
+    seven_day_pct = snapshot.get('seven_day_pct', 0) or 0
+    return f"📊 Usage Update: 5h: {five_hour_pct:.1f}% utilization | 7d: {seven_day_pct:.1f}% utilization"
+
+
 @app.route('/api/entries')
 def get_entries():
-    """Get latest entries"""
+    """Get latest entries with usage snapshots merged"""
+    all_entries = list(latest_entries)  # Start with log entries
+
+    # Get time range from latest_entries
+    if latest_entries:
+        timestamps = [e.get('timestamp') for e in latest_entries if e.get('timestamp')]
+        if timestamps:
+            start_time = min(timestamps)
+            end_time = max(timestamps)
+
+            # Fetch snapshots in same time range
+            snapshots = get_snapshots_in_range(start_time, end_time)
+
+            # Convert snapshots to entry format
+            for snapshot in snapshots:
+                snapshot_entry = {
+                    'type': 'usage-increment',
+                    'timestamp': snapshot['timestamp'],
+                    'sessionId': None,
+                    'content': 'Usage Increment',
+                    'content_display': format_usage_snapshot(snapshot),
+                    'snapshot': snapshot,
+                    '_isSnapshot': True,
+                    'uuid': f"snapshot-{snapshot['id']}"
+                }
+                all_entries.append(snapshot_entry)
+
+            # Sort merged list by timestamp (newest first)
+            all_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+            # Limit to max_entries
+            all_entries = all_entries[:max_entries]
+
     return jsonify({
-        'entries': latest_entries,
-        'total': len(latest_entries)
+        'entries': all_entries,
+        'total': len(all_entries)
     })
 
 

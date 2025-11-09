@@ -123,7 +123,7 @@ async function showUsageHistory() {
                         <tbody>
             `;
 
-            snapshots.reverse().forEach(snapshot => {
+            snapshots.forEach(snapshot => {
                 const timestamp = new Date(snapshot.timestamp).toLocaleString();
                 const when = formatRelativeTime(snapshot.timestamp);
                 const fiveHourPct = (snapshot.five_hour_pct || 0).toFixed(1);
