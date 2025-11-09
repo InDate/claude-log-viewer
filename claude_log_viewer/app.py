@@ -7,7 +7,7 @@ from flask import Flask, render_template, jsonify, request
 from pathlib import Path
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 import threading
@@ -15,7 +15,7 @@ import time
 import subprocess
 import requests
 import argparse
-from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH
+from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH, get_db
 from .token_counter import count_message_tokens
 
 app = Flask(__name__)
@@ -39,9 +39,7 @@ usage_cache = {
 # Track previous usage values to detect increments
 previous_usage = {
     'five_hour_used': None,
-    'seven_day_used': None,
-    'five_hour_baseline_timestamp': None,
-    'seven_day_baseline_timestamp': None
+    'seven_day_used': None
 }
 
 
@@ -287,7 +285,7 @@ def load_latest_entries(file_path=None):
                         try:
                             entry = json.loads(line)
                             # Add metadata
-                            entry['_file'] = file.name
+                            entry['_file'] = str(file)
                             entry['_file_path'] = str(file)
 
                             # Enrich content for display
@@ -320,6 +318,97 @@ def load_latest_entries(file_path=None):
 
     # Keep only the latest entries
     latest_entries = entries[:max_entries]
+
+
+def load_entries_for_time_range(start_timestamp, end_timestamp=None):
+    """
+    Load log entries from disk for a specific time range and add them to latest_entries.
+
+    Args:
+        start_timestamp: ISO timestamp string (start of range)
+        end_timestamp: ISO timestamp string (end of range, defaults to now)
+
+    Returns:
+        Number of entries loaded
+    """
+    global latest_entries
+
+    if end_timestamp is None:
+        end_timestamp = datetime.utcnow().isoformat() + 'Z'
+
+    # Find all .jsonl files in all project subdirectories
+    all_files = list(CLAUDE_PROJECTS_DIR.glob('**/*.jsonl'))
+
+    # Convert timestamps to datetime for comparison
+    start_dt = datetime.fromisoformat(start_timestamp.replace('Z', '+00:00'))
+    end_dt = datetime.fromisoformat(end_timestamp.replace('Z', '+00:00'))
+
+    # Get file modification times - only check files modified in the time range
+    files_to_check = []
+    for file in all_files:
+        file_mtime = datetime.fromtimestamp(file.stat().st_mtime, tz=start_dt.tzinfo)
+        # Check files modified around the time range (with some buffer)
+        if file_mtime >= start_dt - timedelta(hours=1):
+            files_to_check.append(file)
+
+    # Track which timestamps we already have in memory
+    existing_timestamps = {entry.get('timestamp') for entry in latest_entries if entry.get('timestamp')}
+
+    new_entries = []
+    for file in files_to_check:
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line:
+                        try:
+                            entry = json.loads(line)
+                            entry_timestamp = entry.get('timestamp', '')
+
+                            # Skip if we already have this entry in memory
+                            if entry_timestamp in existing_timestamps:
+                                continue
+
+                            # Check if entry is in our time range
+                            if entry_timestamp:
+                                entry_dt = datetime.fromisoformat(entry_timestamp.replace('Z', '+00:00'))
+                                if start_dt <= entry_dt <= end_dt:
+                                    # Add metadata
+                                    entry['_file'] = str(file)
+                                    entry['_file_path'] = str(file)
+
+                                    # Enrich content
+                                    entry['content_display'] = enrich_content(entry)
+
+                                    # Extract tool items
+                                    tool_items = extract_tool_items(entry)
+                                    if tool_items:
+                                        entry['tool_items'] = tool_items
+                                        if tool_items.get('tool_results'):
+                                            entry['has_tool_results'] = True
+
+                                    # Count tokens
+                                    try:
+                                        entry['content_tokens'] = count_message_tokens(entry)
+                                    except Exception as e:
+                                        entry['content_tokens'] = 0
+
+                                    new_entries.append(entry)
+                        except json.JSONDecodeError:
+                            continue
+        except Exception as e:
+            print(f"Error reading {file} for time range: {e}")
+
+    # Add new entries to latest_entries
+    if new_entries:
+        latest_entries.extend(new_entries)
+        # Re-sort by timestamp
+        latest_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        # Keep only max_entries
+        latest_entries = latest_entries[:max_entries]
+        print(f"Loaded {len(new_entries)} entries from time range {start_timestamp} to {end_timestamp}")
+
+    return len(new_entries)
 
 
 def start_file_watcher():
@@ -493,6 +582,60 @@ def calculate_increment_stats(baseline_timestamp):
     }
 
 
+def calculate_windowed_totals(reset_time, window_hours):
+    """
+    Calculate total tokens and messages within a time window using database query.
+
+    Args:
+        reset_time: ISO timestamp string when the window resets (in the future)
+        window_hours: Window duration in hours (5 for 5-hour, 168 for 7-day)
+
+    Returns:
+        dict with 'total_tokens' and 'total_messages' keys
+    """
+    if not reset_time:
+        return {'total_tokens': 0, 'total_messages': 0}
+
+    try:
+        # Parse reset time and calculate window start
+        reset_dt = datetime.fromisoformat(reset_time.replace('Z', '+00:00'))
+        window_start = (reset_dt - timedelta(hours=window_hours)).isoformat().replace('+00:00', 'Z')
+
+        # Query database for sum of deltas within window
+        with get_db() as conn:
+            cursor = conn.cursor()
+
+            if window_hours == 5:
+                cursor.execute("""
+                    SELECT
+                        COALESCE(SUM(five_hour_tokens_consumed), 0) as total_tokens,
+                        COALESCE(SUM(five_hour_messages_count), 0) as total_messages
+                    FROM usage_snapshots
+                    WHERE timestamp >= ?
+                      AND timestamp <= ?
+                      AND five_hour_tokens_consumed IS NOT NULL
+                """, (window_start, reset_time))
+            else:  # 7-day window (168 hours)
+                cursor.execute("""
+                    SELECT
+                        COALESCE(SUM(seven_day_tokens_consumed), 0) as total_tokens,
+                        COALESCE(SUM(seven_day_messages_count), 0) as total_messages
+                    FROM usage_snapshots
+                    WHERE timestamp >= ?
+                      AND timestamp <= ?
+                      AND seven_day_tokens_consumed IS NOT NULL
+                """, (window_start, reset_time))
+
+            result = cursor.fetchone()
+            return {
+                'total_tokens': result['total_tokens'],
+                'total_messages': result['total_messages']
+            }
+    except Exception as e:
+        print(f"Error calculating windowed totals: {e}")
+        return {'total_tokens': 0, 'total_messages': 0}
+
+
 def fetch_usage_data():
     """Fetch usage data from Anthropic OAuth API and track increments"""
     global usage_cache, previous_usage
@@ -545,41 +688,63 @@ def fetch_usage_data():
                     five_hour_window = data.get('five_hour', {})
                     seven_day_window = data.get('seven_day', {})
 
-                    # Get previous snapshot to calculate running totals
-                    from .database import get_latest_snapshot
-                    prev_snapshot = get_latest_snapshot()
+                    # Get reset times for windowed calculations
+                    five_hour_reset = five_hour_window.get('resets_at')
+                    seven_day_reset = seven_day_window.get('resets_at')
 
                     # Calculate increment statistics for each window that increased
                     five_hour_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
                     seven_day_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
 
+                    # Get previous snapshot to retrieve baseline timestamp and last totals
+                    from .database import get_latest_snapshot
+                    prev_snapshot = get_latest_snapshot()
+
                     if five_hour_increased:
-                        delta_stats = calculate_increment_stats(previous_usage['five_hour_baseline_timestamp'])
+                        # Get baseline from previous snapshot's timestamp (when last increment was detected)
+                        baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
+
+                        # Load any missing entries from disk for the time range since last increment
+                        if baseline:
+                            load_entries_for_time_range(baseline)  # end_timestamp defaults to now
+
+                        delta_stats = calculate_increment_stats(baseline)
                         five_hour_stats['tokens'] = delta_stats['tokens']
                         five_hour_stats['messages'] = delta_stats['messages']
 
-                        # Calculate running totals: previous total + current delta
-                        prev_total_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
-                        prev_total_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
-                        five_hour_stats['total_tokens'] = (prev_total_tokens or 0) + delta_stats['tokens']
-                        five_hour_stats['total_messages'] = (prev_total_messages or 0) + delta_stats['messages']
-
-                        # Update baseline for next increment
-                        previous_usage['five_hour_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
-
                     if seven_day_increased:
-                        delta_stats = calculate_increment_stats(previous_usage['seven_day_baseline_timestamp'])
+                        # Get baseline from previous snapshot's timestamp (when last increment was detected)
+                        baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
+
+                        # Load any missing entries from disk for the time range since last increment
+                        if baseline:
+                            load_entries_for_time_range(baseline)  # end_timestamp defaults to now
+
+                        delta_stats = calculate_increment_stats(baseline)
                         seven_day_stats['tokens'] = delta_stats['tokens']
                         seven_day_stats['messages'] = delta_stats['messages']
 
-                        # Calculate running totals: previous total + current delta
-                        prev_total_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
-                        prev_total_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
-                        seven_day_stats['total_tokens'] = (prev_total_tokens or 0) + delta_stats['tokens']
-                        seven_day_stats['total_messages'] = (prev_total_messages or 0) + delta_stats['messages']
+                    # Calculate running totals: previous_total + current_delta
 
-                        # Update baseline for next increment
-                        previous_usage['seven_day_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
+                    if five_hour_increased:
+                        prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
+                        prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
+                        five_hour_stats['total_tokens'] = (prev_tokens or 0) + (five_hour_stats['tokens'] or 0)
+                        five_hour_stats['total_messages'] = (prev_messages or 0) + (five_hour_stats['messages'] or 0)
+                    else:
+                        # If window didn't increase, preserve previous totals
+                        five_hour_stats['total_tokens'] = prev_snapshot.get('five_hour_tokens_total') if prev_snapshot else None
+                        five_hour_stats['total_messages'] = prev_snapshot.get('five_hour_messages_total') if prev_snapshot else None
+
+                    if seven_day_increased:
+                        prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
+                        prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
+                        seven_day_stats['total_tokens'] = (prev_tokens or 0) + (seven_day_stats['tokens'] or 0)
+                        seven_day_stats['total_messages'] = (prev_messages or 0) + (seven_day_stats['messages'] or 0)
+                    else:
+                        # If window didn't increase, preserve previous totals
+                        seven_day_stats['total_tokens'] = prev_snapshot.get('seven_day_tokens_total') if prev_snapshot else None
+                        seven_day_stats['total_messages'] = prev_snapshot.get('seven_day_messages_total') if prev_snapshot else None
 
                     insert_snapshot(
                         timestamp=datetime.utcnow().isoformat() + 'Z',
@@ -607,12 +772,6 @@ def fetch_usage_data():
             # Update previous usage values
             previous_usage['five_hour_used'] = five_hour_util
             previous_usage['seven_day_used'] = seven_day_util
-
-            # Initialize baselines if this is the first poll
-            if previous_usage['five_hour_baseline_timestamp'] is None:
-                previous_usage['five_hour_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
-            if previous_usage['seven_day_baseline_timestamp'] is None:
-                previous_usage['seven_day_baseline_timestamp'] = datetime.utcnow().isoformat() + 'Z'
 
             # Update cache
             usage_cache['data'] = data

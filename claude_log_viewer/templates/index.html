@@ -1876,6 +1876,18 @@
         function getSessionStats() {
             const sessions = {};
 
+            // First pass: Find the most recent compact_boundary for each session
+            const lastCompactTimestamp = {};
+            allEntries.forEach(entry => {
+                const sessionId = entry.sessionId || 'unknown';
+                if (entry.type === 'system' && entry.subtype === 'compact_boundary') {
+                    // Store the timestamp of the most recent compact for this session
+                    if (!lastCompactTimestamp[sessionId] || entry.timestamp > lastCompactTimestamp[sessionId]) {
+                        lastCompactTimestamp[sessionId] = entry.timestamp;
+                    }
+                }
+            });
+
             allEntries.forEach(entry => {
                 const sessionId = entry.sessionId || 'unknown';
 
@@ -1898,8 +1910,13 @@
                 }
 
                 // Sum up token usage from actual content (tiktoken counts)
+                // Only count tokens from entries AFTER the most recent compact
                 if (entry.content_tokens !== undefined && entry.content_tokens !== null) {
-                    sessions[sessionId].tokensUsed += entry.content_tokens;
+                    const lastCompact = lastCompactTimestamp[sessionId];
+                    // If no compact, or entry is after the last compact, count the tokens
+                    if (!lastCompact || entry.timestamp > lastCompact) {
+                        sessions[sessionId].tokensUsed += entry.content_tokens;
+                    }
                 }
 
                 // Extract ExitPlanMode tool uses (plans)
@@ -2262,9 +2279,12 @@
                 // Format tokens and messages for display with "total (+delta)" format
                 const formatStat = (totalTokens, totalMessages, deltaTokens, deltaMessages) => {
                     if (totalTokens === null || totalTokens === undefined) return '—';
-                    const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokens)})`;
-                    const messagesStr = `${totalMessages} (+${deltaMessages})`;
-                    return `${tokensStr} tokens | ${messagesStr} ${totalMessages === 1 ? 'message' : 'messages'}`;
+                    // Handle null deltas by displaying 0
+                    const deltaTokensValue = (deltaTokens === null || deltaTokens === undefined) ? 0 : deltaTokens;
+                    const deltaMessagesValue = (deltaMessages === null || deltaMessages === undefined) ? 0 : deltaMessages;
+                    const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokensValue)})`;
+                    const messagesStr = `${totalMessages} (+${deltaMessagesValue})`;
+                    return `${tokensStr} tokens | ${totalMessages === 1 ? 'message' : 'messages'}`;
                 };
 
                 const fiveHourStats = formatStat(
