@@ -1,0 +1,215 @@
+/* Modal dialog and markdown content */
+
+.modal-overlay {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.8);
+    z-index: 1000;
+    justify-content: center;
+    align-items: center;
+    padding: 20px;
+}
+
+.modal-overlay.active {
+    display: flex;
+}
+
+.modal-dialog {
+    background: #2d2d30;
+    border: 1px solid #3e3e42;
+    border-radius: 6px;
+    max-width: 900px;
+    max-height: 90vh;
+    width: 100%;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+    padding: 15px 20px;
+    border-bottom: 1px solid #3e3e42;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.modal-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #fff;
+}
+
+.modal-close {
+    background: transparent;
+    border: none;
+    color: #9d9d9d;
+    font-size: 24px;
+    cursor: pointer;
+    padding: 0;
+    width: 30px;
+    height: 30px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+}
+
+.modal-close:hover {
+    background: #3e3e42;
+    color: #fff;
+}
+
+.modal-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.modal-content {
+    color: #d4d4d4;
+    line-height: 1.6;
+}
+
+/* Plan navigation controls */
+.plan-navigation {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 15px;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+    margin-bottom: 20px;
+}
+
+.plan-nav-btn {
+    background: #0e639c;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background 0.2s;
+}
+
+.plan-nav-btn:hover:not(:disabled) {
+    background: #1177bb;
+}
+
+.plan-nav-btn:disabled {
+    background: #3c3c3c;
+    color: #666;
+    cursor: not-allowed;
+}
+
+.plan-counter {
+    font-size: 13px;
+    color: #9d9d9d;
+    font-weight: 500;
+}
+
+/* Markdown content styles */
+.modal-content h1 {
+    font-size: 24px;
+    margin: 20px 0 10px 0;
+    color: #fff;
+    border-bottom: 1px solid #3e3e42;
+    padding-bottom: 8px;
+}
+
+.modal-content h2 {
+    font-size: 20px;
+    margin: 18px 0 8px 0;
+    color: #fff;
+}
+
+.modal-content h3 {
+    font-size: 16px;
+    margin: 16px 0 8px 0;
+    color: #fff;
+}
+
+.modal-content p {
+    margin: 10px 0;
+}
+
+.modal-content code {
+    background: #1e1e1e;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Monaco', 'Menlo', 'Courier New', monospace;
+    font-size: 12px;
+    color: #f97583;
+}
+
+.modal-content pre {
+    background: #1e1e1e;
+    padding: 15px;
+    border-radius: 4px;
+    overflow-x: auto;
+    margin: 10px 0;
+    border: 1px solid #3e3e42;
+}
+
+.modal-content pre code {
+    background: transparent;
+    padding: 0;
+    color: #d4d4d4;
+}
+
+.modal-content ul, .modal-content ol {
+    margin: 10px 0;
+    padding-left: 30px;
+}
+
+.modal-content li {
+    margin: 5px 0;
+}
+
+.modal-content blockquote {
+    border-left: 4px solid #007acc;
+    padding-left: 15px;
+    margin: 10px 0;
+    color: #9d9d9d;
+    font-style: italic;
+}
+
+.modal-content a {
+    color: #4fc1ff;
+    text-decoration: none;
+}
+
+.modal-content a:hover {
+    text-decoration: underline;
+}
+
+.modal-content table {
+    border-collapse: collapse;
+    margin: 10px 0;
+    width: 100%;
+}
+
+.modal-content table th,
+.modal-content table td {
+    border: 1px solid #3e3e42;
+    padding: 8px;
+    text-align: left;
+}
+
+.modal-content table th {
+    background: #1e1e1e;
+    font-weight: 600;
+}
+
+.modal-content hr {
+    border: none;
+    border-top: 1px solid #3e3e42;
+    margin: 20px 0;
+}

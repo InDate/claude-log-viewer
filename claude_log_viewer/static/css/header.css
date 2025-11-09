@@ -1,0 +1,131 @@
+/* Header, controls, field selector, stats */
+
+.header {
+    background: #2d2d30;
+    padding: 15px 20px;
+    border-bottom: 1px solid #3e3e42;
+    flex-shrink: 0;
+}
+
+.header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: #fff;
+    margin-bottom: 10px;
+}
+
+.controls {
+    display: flex;
+    gap: 15px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.control-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.control-group label {
+    font-size: 12px;
+    color: #9d9d9d;
+}
+
+input[type="text"], select {
+    background: #3c3c3c;
+    border: 1px solid #555;
+    color: #d4d4d4;
+    padding: 6px 10px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+input[type="text"]:focus, select:focus {
+    outline: none;
+    border-color: #007acc;
+}
+
+button {
+    background: #0e639c;
+    color: #fff;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 12px;
+    font-family: inherit;
+}
+
+button:hover {
+    background: #1177bb;
+}
+
+button:active {
+    background: #0d5a8f;
+}
+
+.field-selector {
+    display: flex;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 10px 0;
+}
+
+.field-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: #3c3c3c;
+    padding: 5px 10px;
+    border-radius: 3px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.field-checkbox:hover {
+    background: #4e4e4e;
+}
+
+.field-checkbox input[type="checkbox"] {
+    cursor: pointer;
+}
+
+.field-checkbox label {
+    cursor: pointer;
+    font-size: 11px;
+    color: #9d9d9d;
+}
+
+.stats {
+    font-size: 11px;
+    color: #9d9d9d;
+    padding: 5px 0;
+}
+
+.chat-summary {
+    background: #252526;
+    padding: 15px;
+    margin: 10px 0;
+    border-radius: 4px;
+    border: 1px solid #3e3e42;
+}
+
+.chat-summary h3 {
+    font-size: 12px;
+    color: #9d9d9d;
+    text-transform: uppercase;
+    margin-bottom: 10px;
+    font-weight: 600;
+}
+
+.auto-refresh {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+}
+
+.auto-refresh.active {
+    color: #4fc1ff;
+}

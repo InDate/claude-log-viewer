@@ -1,0 +1,123 @@
+/* Session cards, hover actions, badges */
+
+.session-cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 10px;
+}
+
+.session-card {
+    background: #2d2d30;
+    padding: 12px;
+    border-radius: 4px;
+    border-left: 4px solid;
+    transition: background 0.2s;
+    position: relative;
+}
+
+.session-card:hover {
+    background: #3e3e42;
+}
+
+.session-card.selected {
+    background: #3e3e42;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.1);
+}
+
+/* Icon action bar */
+.session-icon-actions {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 12px;
+    padding: 0 16px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease;
+    background: rgba(0, 0, 0, 0.7);
+    backdrop-filter: blur(4px);
+    border-radius: 4px;
+}
+
+.session-card:hover .session-icon-actions {
+    opacity: 1;
+    pointer-events: all;
+}
+
+.session-icon-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 4px;
+    padding: 12px 16px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 6px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    flex: 1;
+    max-width: 120px;
+}
+
+.session-icon-btn:hover {
+    background: rgba(255, 255, 255, 0.2);
+    transform: translateY(-2px);
+}
+
+.session-icon-btn[data-action="filter"].active {
+    background: rgba(14, 99, 156, 0.8);
+    border: 1px solid rgba(14, 99, 156, 1);
+}
+
+.session-icon-btn .icon {
+    font-size: 24px;
+    line-height: 1;
+}
+
+.session-icon-btn .label {
+    font-size: 11px;
+    color: #d4d4d4;
+    white-space: nowrap;
+    font-weight: 500;
+}
+
+.session-id {
+    font-size: 11px;
+    font-weight: 600;
+    margin-bottom: 8px;
+    word-break: break-all;
+}
+
+.session-stats {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 10px;
+    color: #9d9d9d;
+}
+
+.session-stat {
+    display: flex;
+    justify-content: space-between;
+}
+
+.session-stat-label {
+    color: #6e7681;
+}
+
+.session-stat-value {
+    color: #d4d4d4;
+    font-weight: 500;
+}
+
+.session-color-badge {
+    display: inline-block;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    font-weight: 600;
+}

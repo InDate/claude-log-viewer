@@ -1,0 +1,163 @@
+/* Usage dashboard and increment rows */
+
+.usage-dashboard {
+    background: #2d2d30;
+    padding: 10px 20px;
+    border-top: 1px solid #3e3e42;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    z-index: 100;
+}
+
+.usage-dashboard h3 {
+    display: none;
+}
+
+.usage-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+    max-width: 600px;
+}
+
+.usage-item {
+    background: #252526;
+    padding: 8px 12px;
+    border-radius: 3px;
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 12px;
+    align-items: center;
+}
+
+.usage-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.usage-label {
+    font-size: 9px;
+    color: #6e7681;
+    text-transform: uppercase;
+}
+
+.usage-time {
+    font-size: 9px;
+    color: #9d9d9d;
+}
+
+.usage-value {
+    font-size: 14px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 3px;
+    text-align: center;
+    min-width: 60px;
+}
+
+.usage-value.low {
+    background: rgba(26, 127, 55, 0.2);
+    color: #4fc1ff;
+}
+
+.usage-value.medium {
+    background: rgba(191, 135, 0, 0.2);
+    color: #f9c513;
+}
+
+.usage-value.high {
+    background: rgba(207, 34, 46, 0.2);
+    color: #f97583;
+}
+
+.usage-error {
+    color: #f97583;
+    font-size: 11px;
+    padding: 10px;
+    background: rgba(207, 34, 46, 0.1);
+    border-radius: 3px;
+}
+
+/* Usage increment row styles */
+.usage-increment-row {
+    background: linear-gradient(90deg, #1e1e1e 0%, #2a2a3a 50%, #1e1e1e 100%);
+}
+
+.usage-increment-row:hover {
+    background: linear-gradient(90deg, #252525 0%, #32324a 50%, #252525 100%);
+}
+
+.usage-increment-cell {
+    padding: 0 !important;
+    border-top: 2px solid #007acc;
+    border-bottom: 2px solid #007acc;
+}
+
+.usage-increment-container {
+    display: flex;
+    align-items: center;
+    padding: 15px 20px;
+    gap: 20px;
+}
+
+.usage-increment-icon {
+    font-size: 32px;
+    line-height: 1;
+    flex-shrink: 0;
+}
+
+.usage-increment-content {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.usage-increment-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: #4fc1ff;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.usage-increment-details {
+    display: flex;
+    gap: 30px;
+    flex-wrap: wrap;
+}
+
+.usage-increment-stat {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.usage-increment-label {
+    font-size: 12px;
+    color: #9d9d9d;
+    font-weight: 500;
+}
+
+.usage-increment-value {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 4px 8px;
+    border-radius: 3px;
+}
+
+.usage-increment-meta {
+    font-size: 11px;
+    color: #8d8d8d;
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.usage-increment-time {
+    font-size: 11px;
+    color: #7d7d7d;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
