@@ -1,6 +1,6 @@
 // Session statistics and card rendering
 
-import { allEntries, selectedSession, lastSessionStats, allTodoData, setSelectedSession, setLastSessionStats } from './state.js';
+import { allEntries, selectedSession, lastSessionStats, allTodoData, setSelectedSession, setLastSessionStats, setCurrentViewMode } from './state.js';
 import { getSessionColor, formatNumber, formatTimestamp } from './utils.js';
 import { showPlanDialog, showTodoDialog } from './modals.js';
 
@@ -112,6 +112,9 @@ export function getSessionStats() {
             session.planCount = session.planEntries.length;
             session.hasPlans = true;
         }
+
+        // Session has timeline if it has messages
+        session.hasTimeline = session.messageCount > 0;
     });
 
     return Object.values(sessions).sort((a, b) => {
@@ -219,6 +222,12 @@ export function renderSessionSummary() {
                         <div class="label">Todos</div>
                     </div>
                     ` : ''}
+                    ${session.hasTimeline ? `
+                    <div class="session-icon-btn" data-action="timeline" title="View timeline">
+                        <div class="icon">📊</div>
+                        <div class="label">Timeline</div>
+                    </div>
+                    ` : ''}
                 </div>
                 <div class="session-id">
                     <span class="session-color-badge" style="background: ${color}; color: #fff;">
@@ -277,6 +286,24 @@ export function renderSessionSummary() {
                         showPlanDialog(session);
                     } else if (action === 'todos') {
                         showTodoDialog(session);
+                    } else if (action === 'timeline') {
+                        // Switch to timeline view and filter to this session
+                        setSelectedSession(session.id);
+                        setCurrentViewMode('timeline');
+
+                        // Update filter button active state
+                        container.querySelectorAll('.session-card').forEach(c => {
+                            if (c.dataset.sessionId === session.id) {
+                                c.classList.add('selected');
+                                c.querySelector('[data-action="filter"]')?.classList.add('active');
+                            } else {
+                                c.classList.remove('selected');
+                                c.querySelector('[data-action="filter"]')?.classList.remove('active');
+                            }
+                        });
+
+                        // Render timeline view
+                        import('./entries.js').then(module => module.renderEntries());
                     }
                 });
             });

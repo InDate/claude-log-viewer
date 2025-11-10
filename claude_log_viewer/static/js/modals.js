@@ -512,9 +512,93 @@ export function showTodoDialog(session, todoIndex = 0) {
     modal.classList.add('active');
 }
 
+// Show plan dialog from timeline (simplified - no navigation)
+export function showTimelinePlanDialog(planText) {
+    const modal = document.getElementById('contentModal');
+    const modalContent = document.getElementById('modalContent');
+
+    if (!planText) {
+        return;
+    }
+
+    // Build markdown content
+    let markdownContent = `# Plan\n\n`;
+    markdownContent += planText;
+
+    // Parse and render markdown
+    const htmlContent = md.render(markdownContent);
+
+    modalContent.innerHTML = htmlContent;
+
+    // Show modal
+    modal.classList.add('active');
+}
+
+// Show todo dialog from timeline (simplified - no navigation)
+export function showTimelineTodoDialog(todos) {
+    const modal = document.getElementById('contentModal');
+    const modalContent = document.getElementById('modalContent');
+
+    if (!todos || todos.length === 0) {
+        return;
+    }
+
+    // Group todos by status
+    const inProgress = todos.filter(t => t.status === 'in_progress');
+    const pending = todos.filter(t => t.status === 'pending');
+    const completed = todos.filter(t => t.status === 'completed');
+
+    // Build markdown content
+    let markdownContent = `# Todo List\n\n`;
+
+    // In Progress section
+    if (inProgress.length > 0) {
+        markdownContent += `## ⏳ In Progress (${inProgress.length})\n\n`;
+        inProgress.forEach(todo => {
+            markdownContent += `- [ ] **${todo.content}**\n`;
+            if (todo.activeForm && todo.activeForm !== todo.content) {
+                markdownContent += `  - *${todo.activeForm}*\n`;
+            }
+        });
+        markdownContent += '\n';
+    }
+
+    // Pending section
+    if (pending.length > 0) {
+        markdownContent += `## ☐ Pending (${pending.length})\n\n`;
+        pending.forEach(todo => {
+            markdownContent += `- [ ] ${todo.content}\n`;
+            if (todo.activeForm && todo.activeForm !== todo.content) {
+                markdownContent += `  - *${todo.activeForm}*\n`;
+            }
+        });
+        markdownContent += '\n';
+    }
+
+    // Completed section
+    if (completed.length > 0) {
+        markdownContent += `## ✅ Completed (${completed.length})\n\n`;
+        completed.forEach(todo => {
+            markdownContent += `- [x] ${todo.content}\n`;
+            if (todo.activeForm && todo.activeForm !== todo.content) {
+                markdownContent += `  - *${todo.activeForm}*\n`;
+            }
+        });
+    }
+
+    // Parse and render markdown
+    const htmlContent = md.render(markdownContent);
+
+    modalContent.innerHTML = htmlContent;
+
+    // Show modal
+    modal.classList.add('active');
+}
+
 // Close modal dialog
 export function closeContentDialog() {
     const modal = document.getElementById('contentModal');
+
     modal.classList.remove('active');
     // Reset navigation states
     setCurrentPlanNavigation(null);

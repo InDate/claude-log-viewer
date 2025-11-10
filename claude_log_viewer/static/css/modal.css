@@ -269,3 +269,20 @@
     color: #f97583;
     font-size: 13px;
 }
+
+/* Timeline modal container */
+.modal-timeline-container {
+    width: 100%;
+    min-height: 500px;
+    background: #1e1e1e;
+    border-radius: 4px;
+    padding: 20px;
+}
+
+.modal-timeline-container canvas {
+    width: 100%;
+    height: 500px;
+    background: #1e1e1e;
+    border: 1px solid #3e3e42;
+    border-radius: 4px;
+}

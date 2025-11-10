@@ -1,6 +1,6 @@
 // Event handlers and listeners
 
-import { autoRefreshInterval, selectedFields, setAutoRefreshInterval, setPendingSelectedFields, applyPendingFields } from './state.js';
+import { autoRefreshInterval, selectedFields, currentViewMode, setAutoRefreshInterval, setPendingSelectedFields, applyPendingFields, setCurrentViewMode } from './state.js';
 import { loadEntries } from './api.js';
 import { renderEntries, renderFieldSelector, renderColumnPreview } from './entries.js';
 
@@ -75,6 +75,26 @@ export function initializeEventListeners() {
     document.getElementById('limitSelect').addEventListener('change', renderEntries);
     document.getElementById('autoRefreshCheck').addEventListener('change', toggleAutoRefresh);
     document.getElementById('refreshInterval').addEventListener('change', updateAutoRefreshInterval);
+
+    // View toggle listener
+    document.getElementById('viewToggleBtn').addEventListener('click', () => {
+        const newMode = currentViewMode === 'table' ? 'timeline' : 'table';
+        setCurrentViewMode(newMode);
+
+        // Update button appearance
+        const icon = document.getElementById('viewToggleIcon');
+        const label = document.getElementById('viewToggleLabel');
+        if (newMode === 'timeline') {
+            icon.textContent = '📊';
+            label.textContent = 'Timeline';
+        } else {
+            icon.textContent = '📋';
+            label.textContent = 'Table';
+        }
+
+        // Re-render with new view
+        renderEntries();
+    });
 
     // Drawer toggle listeners
     document.getElementById('fieldSelectorBtn').addEventListener('click', toggleDrawer);

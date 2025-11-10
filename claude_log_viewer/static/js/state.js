@@ -33,6 +33,7 @@ export let currentFilters = { // Track current filter state
 };
 export let lastSessionStats = {}; // Track previous session stats for incremental updates
 export let usageRefreshInterval = null; // Interval for usage polling
+export let currentViewMode = 'table'; // Current view mode: 'table' or 'timeline'
 
 // Setter functions to update state from other modules
 export function setAllEntries(entries) {
@@ -69,6 +70,10 @@ export function setLastSessionStats(stats) {
 
 export function setUsageRefreshInterval(interval) {
     usageRefreshInterval = interval;
+}
+
+export function setCurrentViewMode(mode) {
+    currentViewMode = mode;
 }
 
 // Save selected fields to localStorage

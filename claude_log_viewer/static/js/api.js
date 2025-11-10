@@ -74,3 +74,15 @@ export async function loadFields() {
         console.error('Error loading fields:', error);
     }
 }
+
+// Load timeline graph for a session
+export async function loadTimelineGraph(sessionId) {
+    try {
+        const response = await fetch(`/api/timeline?session_id=${sessionId}`);
+        const data = await response.json();
+        return data; // { nodes, edges, lanes, stats }
+    } catch (error) {
+        console.error('Error loading timeline:', error);
+        throw error;
+    }
+}
