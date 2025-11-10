@@ -17,6 +17,7 @@ import requests
 import argparse
 from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH, get_db
 from .token_counter import count_message_tokens
+from .timeline_builder import build_timeline
 
 app = Flask(__name__)
 
@@ -735,16 +736,29 @@ def fetch_usage_data():
             should_snapshot = False
             five_hour_increased = False
             seven_day_increased = False
+            five_hour_reset = False
+            seven_day_reset = False
 
             if previous_usage['five_hour_used'] is not None or previous_usage['seven_day_used'] is not None:
-                if previous_usage['five_hour_used'] is not None and five_hour_util > previous_usage['five_hour_used']:
-                    should_snapshot = True
-                    five_hour_increased = True
-                if previous_usage['seven_day_used'] is not None and seven_day_util > previous_usage['seven_day_used']:
-                    should_snapshot = True
-                    seven_day_increased = True
+                if previous_usage['five_hour_used'] is not None:
+                    if five_hour_util > previous_usage['five_hour_used']:
+                        should_snapshot = True
+                        five_hour_increased = True
+                    elif five_hour_util < previous_usage['five_hour_used']:
+                        # Usage dropped - window was reset
+                        should_snapshot = True
+                        five_hour_reset = True
 
-            # Store snapshot if usage increased
+                if previous_usage['seven_day_used'] is not None:
+                    if seven_day_util > previous_usage['seven_day_used']:
+                        should_snapshot = True
+                        seven_day_increased = True
+                    elif seven_day_util < previous_usage['seven_day_used']:
+                        # Usage dropped - window was reset
+                        should_snapshot = True
+                        seven_day_reset = True
+
+            # Store snapshot if usage increased or window was reset
             if should_snapshot:
                 try:
                     five_hour_window = data.get('five_hour', {})
@@ -762,7 +776,7 @@ def fetch_usage_data():
                     from .database import get_latest_snapshot
                     prev_snapshot = get_latest_snapshot()
 
-                    if five_hour_increased:
+                    if five_hour_increased or five_hour_reset:
                         # Get baseline from previous snapshot's timestamp (when last increment was detected)
                         baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
 
@@ -774,7 +788,7 @@ def fetch_usage_data():
                         five_hour_stats['tokens'] = delta_stats['tokens']
                         five_hour_stats['messages'] = delta_stats['messages']
 
-                    if seven_day_increased:
+                    if seven_day_increased or seven_day_reset:
                         # Get baseline from previous snapshot's timestamp (when last increment was detected)
                         baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
 
@@ -789,22 +803,42 @@ def fetch_usage_data():
                     # Calculate running totals: previous_total + current_delta
 
                     if five_hour_increased:
-                        prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
-                        prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
-                        five_hour_stats['total_tokens'] = (prev_tokens or 0) + (five_hour_stats['tokens'] or 0)
-                        five_hour_stats['total_messages'] = (prev_messages or 0) + (five_hour_stats['messages'] or 0)
+                        if five_hour_reset:
+                            # Window was reset - start fresh with current delta only
+                            five_hour_stats['total_tokens'] = five_hour_stats['tokens'] or 0
+                            five_hour_stats['total_messages'] = five_hour_stats['messages'] or 0
+                        else:
+                            # Normal increment - add to previous total
+                            prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
+                            prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
+                            five_hour_stats['total_tokens'] = (prev_tokens or 0) + (five_hour_stats['tokens'] or 0)
+                            five_hour_stats['total_messages'] = (prev_messages or 0) + (five_hour_stats['messages'] or 0)
+                    elif five_hour_reset:
+                        # Window was reset but no new usage yet - set totals to 0
+                        five_hour_stats['total_tokens'] = 0
+                        five_hour_stats['total_messages'] = 0
                     else:
-                        # If window didn't increase, preserve previous totals
+                        # If window didn't increase or reset, preserve previous totals
                         five_hour_stats['total_tokens'] = prev_snapshot.get('five_hour_tokens_total') if prev_snapshot else None
                         five_hour_stats['total_messages'] = prev_snapshot.get('five_hour_messages_total') if prev_snapshot else None
 
                     if seven_day_increased:
-                        prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
-                        prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
-                        seven_day_stats['total_tokens'] = (prev_tokens or 0) + (seven_day_stats['tokens'] or 0)
-                        seven_day_stats['total_messages'] = (prev_messages or 0) + (seven_day_stats['messages'] or 0)
+                        if seven_day_reset:
+                            # Window was reset - start fresh with current delta only
+                            seven_day_stats['total_tokens'] = seven_day_stats['tokens'] or 0
+                            seven_day_stats['total_messages'] = seven_day_stats['messages'] or 0
+                        else:
+                            # Normal increment - add to previous total
+                            prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
+                            prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
+                            seven_day_stats['total_tokens'] = (prev_tokens or 0) + (seven_day_stats['tokens'] or 0)
+                            seven_day_stats['total_messages'] = (prev_messages or 0) + (seven_day_stats['messages'] or 0)
+                    elif seven_day_reset:
+                        # Window was reset but no new usage yet - set totals to 0
+                        seven_day_stats['total_tokens'] = 0
+                        seven_day_stats['total_messages'] = 0
                     else:
-                        # If window didn't increase, preserve previous totals
+                        # If window didn't increase or reset, preserve previous totals
                         seven_day_stats['total_tokens'] = prev_snapshot.get('seven_day_tokens_total') if prev_snapshot else None
                         seven_day_stats['total_messages'] = prev_snapshot.get('seven_day_messages_total') if prev_snapshot else None
 
@@ -868,6 +902,26 @@ def get_usage_snapshots():
             'snapshots': snapshots,
             'total': len(snapshots)
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/timeline')
+def get_timeline():
+    """Get conversation timeline graph for visualization"""
+    session_id = request.args.get('session_id')
+
+    try:
+        # Filter entries by session if specified
+        entries_to_analyze = latest_entries
+        if session_id:
+            entries_to_analyze = [e for e in latest_entries
+                                 if e.get('sessionId') == session_id]
+
+        # Build timeline graph
+        timeline_data = build_timeline(entries_to_analyze)
+
+        return jsonify(timeline_data)
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
