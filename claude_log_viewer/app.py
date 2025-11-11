@@ -19,7 +19,8 @@ from collections import defaultdict
 from .database import (
     init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot,
     insert_session, DB_PATH, get_db, migrate_add_fork_tracking,
-    insert_snapshot_tick, update_snapshot_calculations, get_snapshot_by_id
+    insert_snapshot_tick, update_snapshot_calculations, get_snapshot_by_id,
+    get_setting, set_setting, get_all_settings
 )
 from .token_counter import count_message_tokens
 from .timeline_builder import build_timeline
@@ -27,12 +28,14 @@ from .usage_calculator import (
     detect_reset, calculate_delta, calculate_total_incremental,
     FIVE_HOUR_WINDOW, SEVEN_DAY_WINDOW
 )
+from .git_manager import GitRollbackManager
 
 app = Flask(__name__)
 
 # Get the Claude projects directory - monitor all projects
 CLAUDE_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
 CLAUDE_TODOS_DIR = Path.home() / '.claude' / 'todos'
+target_project = None  # Set via --project CLI argument for project isolation
 
 # Store latest entries
 latest_entries = []
@@ -938,10 +941,10 @@ def calculate_and_update_snapshot(
 
         print(f"  📊 5h window: Counted {five_hour_delta_messages} messages, {five_hour_delta_tokens} tokens (delta)")
     else:
-        # Window didn't change - preserve previous totals
+        # Window didn't change - preserve previous totals (default to 0 if NULL)
         if prev_snapshot:
-            five_hour_total_tokens = prev_snapshot.get('five_hour_tokens_total')
-            five_hour_total_messages = prev_snapshot.get('five_hour_messages_total')
+            five_hour_total_tokens = prev_snapshot.get('five_hour_tokens_total', 0) or 0
+            five_hour_total_messages = prev_snapshot.get('five_hour_messages_total', 0) or 0
 
     # Calculate 7-day window if it changed
     if seven_day_increased or seven_day_reset_detected:
@@ -964,10 +967,10 @@ def calculate_and_update_snapshot(
 
         print(f"  📊 7d window: Counted {seven_day_delta_messages} messages, {seven_day_delta_tokens} tokens (delta)")
     else:
-        # Window didn't change - preserve previous totals
+        # Window didn't change - preserve previous totals (default to 0 if NULL)
         if prev_snapshot:
-            seven_day_total_tokens = prev_snapshot.get('seven_day_tokens_total')
-            seven_day_total_messages = prev_snapshot.get('seven_day_messages_total')
+            seven_day_total_tokens = prev_snapshot.get('seven_day_tokens_total', 0) or 0
+            seven_day_total_messages = prev_snapshot.get('seven_day_messages_total', 0) or 0
 
     # Update snapshot with calculated values
     update_snapshot_calculations(
@@ -1154,6 +1157,186 @@ def get_timeline():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/sessions/<session_id>/checkpoint', methods=['POST'])
+def create_checkpoint_api(session_id):
+    """
+    Create a manual checkpoint for a session.
+
+    Request body (JSON):
+    {
+        "description": "Optional description",
+        "message_uuid": "Optional message UUID"
+    }
+    """
+    try:
+        # Check if git management is enabled
+        if not get_setting('git_enabled', False):
+            return jsonify({
+                'success': False,
+                'error': 'Git management is disabled. Enable it in settings first.'
+            }), 403
+
+        # Get project directory if targeting specific project
+        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+
+        # Create git manager with database connection
+        with get_db() as db:
+            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+
+            # Get request data
+            data = request.get_json() or {}
+            description = data.get('description')
+            message_uuid = data.get('message_uuid')
+
+            # Create checkpoint
+            result = git_manager.create_checkpoint(
+                session_uuid=session_id,
+                checkpoint_type='manual',
+                message_uuid=message_uuid,
+                description=description
+            )
+
+            if result['success']:
+                return jsonify(result), 201
+            else:
+                return jsonify(result), 400
+
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/sessions/<session_id>/checkpoints', methods=['GET'])
+def list_checkpoints_api(session_id):
+    """Get all checkpoints for a session."""
+    try:
+        # Check if git management is enabled
+        if not get_setting('git_enabled', False):
+            return jsonify({
+                'session_id': session_id,
+                'checkpoints': [],
+                'count': 0,
+                'git_disabled': True
+            })
+
+        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+
+        with get_db() as db:
+            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+            checkpoints = git_manager.list_checkpoints(session_uuid=session_id)
+
+            return jsonify({
+                'session_id': session_id,
+                'checkpoints': checkpoints,
+                'count': len(checkpoints)
+            })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/sessions/<session_id>/commits', methods=['GET'])
+def list_commits_api(session_id):
+    """Get all git commits for a session."""
+    try:
+        limit = int(request.args.get('limit', 50))
+        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+
+        with get_db() as db:
+            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+            commits = git_manager.list_commits(session_uuid=session_id, limit=limit)
+
+            return jsonify({
+                'session_id': session_id,
+                'commits': commits,
+                'count': len(commits)
+            })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/git/status', methods=['GET'])
+def git_status_api():
+    """Get git repository status."""
+    try:
+        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+
+        with get_db() as db:
+            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+            status = git_manager.get_repo_status()
+
+            return jsonify(status)
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/messages/<message_uuid>/checkpoints', methods=['GET'])
+def list_message_checkpoints_api(message_uuid):
+    """Get all checkpoints associated with a specific message."""
+    try:
+        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+
+        with get_db() as db:
+            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+            checkpoints = git_manager.list_checkpoints(message_uuid=message_uuid)
+
+            return jsonify({
+                'message_uuid': message_uuid,
+                'checkpoints': checkpoints,
+                'count': len(checkpoints)
+            })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/settings', methods=['GET'])
+def get_settings_api():
+    """Get all settings."""
+    try:
+        settings = get_all_settings()
+        return jsonify(settings)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/settings/<key>', methods=['GET'])
+def get_setting_api(key):
+    """Get a specific setting."""
+    try:
+        value = get_setting(key)
+        return jsonify({'key': key, 'value': value})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/settings/<key>', methods=['POST'])
+def set_setting_api(key):
+    """
+    Set a setting value.
+
+    Request body (JSON):
+    {
+        "value": <value>
+    }
+    """
+    try:
+        data = request.get_json()
+        if 'value' not in data:
+            return jsonify({'error': 'Missing value in request body'}), 400
+
+        set_setting(key, data['value'])
+
+        return jsonify({
+            'success': True,
+            'key': key,
+            'value': data['value']
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 def main():
     """Main entry point for the CLI"""
     global max_entries, file_age_days
@@ -1179,11 +1362,35 @@ def main():
         default=500,
         help='Maximum number of entries to keep in memory (default: 500)'
     )
+    parser.add_argument(
+        '--project',
+        type=str,
+        help='Target specific project directory (isolates JSONL processing and git operations)'
+    )
     args = parser.parse_args()
 
     # Set global configuration from arguments
+    global target_project, CLAUDE_PROJECTS_DIR
     file_age_days = args.days
     max_entries = args.limit
+
+    # Handle project isolation
+    if args.project:
+        target_project = args.project
+        project_path = CLAUDE_PROJECTS_DIR / target_project
+        if not project_path.exists():
+            print(f"ERROR: Project directory not found: {project_path}")
+            print(f"Available projects:")
+            if CLAUDE_PROJECTS_DIR.exists():
+                for p in sorted(CLAUDE_PROJECTS_DIR.iterdir()):
+                    if p.is_dir():
+                        print(f"  - {p.name}")
+            import sys
+            sys.exit(1)
+        print(f"🎯 Targeting project: {target_project}")
+        print(f"   Project path: {project_path}")
+        # Override CLAUDE_PROJECTS_DIR for this session
+        CLAUDE_PROJECTS_DIR = project_path
 
     # Handle database reset
     if args.reset_db:
