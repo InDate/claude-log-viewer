@@ -16,9 +16,17 @@ import subprocess
 import requests
 import argparse
 from collections import defaultdict
-from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH, get_db, migrate_add_fork_tracking
+from .database import (
+    init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot,
+    insert_session, DB_PATH, get_db, migrate_add_fork_tracking,
+    insert_snapshot_tick, update_snapshot_calculations, get_snapshot_by_id
+)
 from .token_counter import count_message_tokens
 from .timeline_builder import build_timeline
+from .usage_calculator import (
+    detect_reset, calculate_delta, calculate_total_incremental,
+    FIVE_HOUR_WINDOW, SEVEN_DAY_WINDOW
+)
 
 app = Flask(__name__)
 
@@ -857,6 +865,127 @@ def calculate_windowed_totals(reset_time, window_hours):
         return {'total_tokens': 0, 'total_messages': 0}
 
 
+def calculate_and_update_snapshot(
+    snapshot_id: int,
+    five_hour_increased: bool,
+    seven_day_increased: bool,
+    five_hour_reset_detected: bool,
+    seven_day_reset_detected: bool,
+    five_hour_reset_time: str,
+    seven_day_reset_time: str,
+    prev_snapshot: dict
+):
+    """
+    Calculate deltas and totals for a snapshot and update the database.
+
+    This is Phase 2 of the two-phase flow:
+    1. API tick already stored (by insert_snapshot_tick)
+    2. Now calculate deltas/totals and update
+
+    Args:
+        snapshot_id: ID of the snapshot to update
+        five_hour_increased: True if 5-hour window usage increased
+        seven_day_increased: True if 7-day window usage increased
+        five_hour_reset_detected: True if 5-hour window was reset
+        seven_day_reset_detected: True if 7-day window was reset
+        five_hour_reset_time: ISO timestamp when 5-hour window resets
+        seven_day_reset_time: ISO timestamp when 7-day window resets
+        prev_snapshot: Previous snapshot dict for baseline reference
+    """
+    # Get baseline timestamp from previous snapshot
+    baseline_timestamp = prev_snapshot.get('timestamp') if prev_snapshot else None
+
+    # Load entries for calculation if we have a baseline
+    if baseline_timestamp:
+        load_entries_for_time_range(baseline_timestamp)
+
+    # Take snapshot of entries for calculation
+    with latest_entries_lock:
+        entries_snapshot = list(latest_entries)
+
+    # Detect active sessions (for fork-aware filtering)
+    active_session_ids = detect_active_sessions(entries_snapshot)
+    print(f"🔍 Fork detection: {len(active_session_ids)} active sessions found")
+
+    # Initialize calculation results
+    five_hour_delta_tokens = None
+    five_hour_delta_messages = None
+    five_hour_total_tokens = None
+    five_hour_total_messages = None
+    seven_day_delta_tokens = None
+    seven_day_delta_messages = None
+    seven_day_total_tokens = None
+    seven_day_total_messages = None
+
+    # Calculate 5-hour window if it changed
+    if five_hour_increased or five_hour_reset_detected:
+        # Calculate delta using usage_calculator
+        delta_result = calculate_delta(entries_snapshot, baseline_timestamp, active_session_ids)
+        five_hour_delta_tokens = delta_result['tokens']
+        five_hour_delta_messages = delta_result['messages']
+
+        # Calculate total using incremental approach
+        prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
+        prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
+
+        five_hour_total_tokens, five_hour_total_messages = calculate_total_incremental(
+            prev_tokens or 0,
+            prev_messages or 0,
+            five_hour_delta_tokens,
+            five_hour_delta_messages,
+            five_hour_reset_detected
+        )
+
+        print(f"  📊 5h window: Counted {five_hour_delta_messages} messages, {five_hour_delta_tokens} tokens (delta)")
+    else:
+        # Window didn't change - preserve previous totals
+        if prev_snapshot:
+            five_hour_total_tokens = prev_snapshot.get('five_hour_tokens_total')
+            five_hour_total_messages = prev_snapshot.get('five_hour_messages_total')
+
+    # Calculate 7-day window if it changed
+    if seven_day_increased or seven_day_reset_detected:
+        # Calculate delta using usage_calculator
+        delta_result = calculate_delta(entries_snapshot, baseline_timestamp, active_session_ids)
+        seven_day_delta_tokens = delta_result['tokens']
+        seven_day_delta_messages = delta_result['messages']
+
+        # Calculate total using incremental approach
+        prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
+        prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
+
+        seven_day_total_tokens, seven_day_total_messages = calculate_total_incremental(
+            prev_tokens or 0,
+            prev_messages or 0,
+            seven_day_delta_tokens,
+            seven_day_delta_messages,
+            seven_day_reset_detected
+        )
+
+        print(f"  📊 7d window: Counted {seven_day_delta_messages} messages, {seven_day_delta_tokens} tokens (delta)")
+    else:
+        # Window didn't change - preserve previous totals
+        if prev_snapshot:
+            seven_day_total_tokens = prev_snapshot.get('seven_day_tokens_total')
+            seven_day_total_messages = prev_snapshot.get('seven_day_messages_total')
+
+    # Update snapshot with calculated values
+    update_snapshot_calculations(
+        snapshot_id=snapshot_id,
+        five_hour_tokens_consumed=five_hour_delta_tokens,
+        five_hour_messages_count=five_hour_delta_messages,
+        seven_day_tokens_consumed=seven_day_delta_tokens,
+        seven_day_messages_count=seven_day_delta_messages,
+        five_hour_tokens_total=five_hour_total_tokens,
+        five_hour_messages_total=five_hour_total_messages,
+        seven_day_tokens_total=seven_day_total_tokens,
+        seven_day_messages_total=seven_day_total_messages,
+        active_sessions=list(active_session_ids)
+    )
+
+    print(f"📊 Usage snapshot updated: 5h total={five_hour_total_messages} msgs (+{five_hour_delta_messages} delta), 7d total={seven_day_total_messages} msgs (+{seven_day_delta_messages} delta)")
+
+
 def fetch_usage_data():
     """Fetch usage data from Anthropic OAuth API and track increments"""
     global usage_cache, previous_usage
@@ -922,121 +1051,43 @@ def fetch_usage_data():
                     five_hour_window = data.get('five_hour', {})
                     seven_day_window = data.get('seven_day', {})
 
-                    # Get reset times for windowed calculations
+                    # Get reset times from API response
                     five_hour_reset_time = five_hour_window.get('resets_at')
                     seven_day_reset_time = seven_day_window.get('resets_at')
 
-                    # Calculate increment statistics for each window that increased
-                    five_hour_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
-                    seven_day_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
-
-                    # Get previous snapshot to retrieve baseline timestamp and last totals
-                    from .database import get_latest_snapshot
+                    # Get previous snapshot for baseline reference
                     prev_snapshot = get_latest_snapshot()
 
-                    # Take snapshot of entries (protected by lock)
-                    with latest_entries_lock:
-                        entries_snapshot = list(latest_entries)
-
-                    # Detect active sessions (fork-aware filtering)
-                    active_session_ids = detect_active_sessions(entries_snapshot)
-                    print(f"🔍 Fork detection: {len(active_session_ids)} active sessions found")
-
-                    if five_hour_increased or five_hour_reset_detected:
-                        # Get baseline from previous snapshot's timestamp (when last increment was detected)
-                        baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
-
-                        # Load any missing entries from disk for the time range since last increment
-                        if baseline:
-                            load_entries_for_time_range(baseline)  # end_timestamp defaults to now
-
-                        delta_stats = calculate_increment_stats(baseline)
-                        five_hour_stats['tokens'] = delta_stats['tokens']
-                        five_hour_stats['messages'] = delta_stats['messages']
-
-                        # Debug output
-                        print(f"  📊 5h window: Counted {delta_stats['messages']} messages, {delta_stats['tokens']} tokens (all branches)")
-
-                    if seven_day_increased or seven_day_reset_detected:
-                        # Get baseline from previous snapshot's timestamp (when last increment was detected)
-                        baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
-
-                        # Load any missing entries from disk for the time range since last increment
-                        if baseline:
-                            load_entries_for_time_range(baseline)  # end_timestamp defaults to now
-
-                        delta_stats = calculate_increment_stats(baseline)
-                        seven_day_stats['tokens'] = delta_stats['tokens']
-                        seven_day_stats['messages'] = delta_stats['messages']
-
-                        # Debug output
-                        print(f"  📊 7d window: Counted {delta_stats['messages']} messages, {delta_stats['tokens']} tokens (all branches)")
-
-                    # Calculate running totals: previous_total + current_delta
-
-                    if five_hour_increased:
-                        if five_hour_reset_detected:
-                            # Window was reset - start fresh with current delta only
-                            five_hour_stats['total_tokens'] = five_hour_stats['tokens'] or 0
-                            five_hour_stats['total_messages'] = five_hour_stats['messages'] or 0
-                        else:
-                            # Normal increment - add to previous total
-                            prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
-                            prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
-                            five_hour_stats['total_tokens'] = (prev_tokens or 0) + (five_hour_stats['tokens'] or 0)
-                            five_hour_stats['total_messages'] = (prev_messages or 0) + (five_hour_stats['messages'] or 0)
-                    elif five_hour_reset_detected:
-                        # Window was reset but no new usage yet - set totals to 0
-                        five_hour_stats['total_tokens'] = 0
-                        five_hour_stats['total_messages'] = 0
-                    else:
-                        # If window didn't increase or reset, preserve previous totals
-                        five_hour_stats['total_tokens'] = prev_snapshot.get('five_hour_tokens_total') if prev_snapshot else None
-                        five_hour_stats['total_messages'] = prev_snapshot.get('five_hour_messages_total') if prev_snapshot else None
-
-                    if seven_day_increased:
-                        if seven_day_reset_detected:
-                            # Window was reset - start fresh with current delta only
-                            seven_day_stats['total_tokens'] = seven_day_stats['tokens'] or 0
-                            seven_day_stats['total_messages'] = seven_day_stats['messages'] or 0
-                        else:
-                            # Normal increment - add to previous total
-                            prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
-                            prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
-                            seven_day_stats['total_tokens'] = (prev_tokens or 0) + (seven_day_stats['tokens'] or 0)
-                            seven_day_stats['total_messages'] = (prev_messages or 0) + (seven_day_stats['messages'] or 0)
-                    elif seven_day_reset_detected:
-                        # Window was reset but no new usage yet - set totals to 0
-                        seven_day_stats['total_tokens'] = 0
-                        seven_day_stats['total_messages'] = 0
-                    else:
-                        # If window didn't increase or reset, preserve previous totals
-                        seven_day_stats['total_tokens'] = prev_snapshot.get('seven_day_tokens_total') if prev_snapshot else None
-                        seven_day_stats['total_messages'] = prev_snapshot.get('seven_day_messages_total') if prev_snapshot else None
-
-                    insert_snapshot(
+                    # PHASE 1: Store API tick immediately (no calculations yet)
+                    snapshot_id = insert_snapshot_tick(
                         timestamp=datetime.utcnow().isoformat() + 'Z',
-                        five_hour_used=int(five_hour_util),  # Store as integer percentage
-                        five_hour_limit=100,  # API returns percentage, so limit is 100%
-                        seven_day_used=int(seven_day_util),  # Store as integer percentage
-                        seven_day_limit=100,  # API returns percentage, so limit is 100%
+                        five_hour_used=int(five_hour_util),
+                        five_hour_limit=100,
+                        seven_day_used=int(seven_day_util),
+                        seven_day_limit=100,
                         five_hour_pct=five_hour_util,
                         seven_day_pct=seven_day_util,
                         five_hour_reset=five_hour_reset_time,
-                        seven_day_reset=seven_day_reset_time,
-                        five_hour_tokens_consumed=five_hour_stats['tokens'],
-                        five_hour_messages_count=five_hour_stats['messages'],
-                        seven_day_tokens_consumed=seven_day_stats['tokens'],
-                        seven_day_messages_count=seven_day_stats['messages'],
-                        five_hour_tokens_total=five_hour_stats['total_tokens'],
-                        five_hour_messages_total=five_hour_stats['total_messages'],
-                        seven_day_tokens_total=seven_day_stats['total_tokens'],
-                        seven_day_messages_total=seven_day_stats['total_messages'],
-                        active_sessions=list(active_session_ids)
+                        seven_day_reset=seven_day_reset_time
                     )
-                    print(f"📊 Usage snapshot saved: 5h={five_hour_util}% ({five_hour_stats['total_messages']} msgs total, +{five_hour_stats['messages']} delta), 7d={seven_day_util}% ({seven_day_stats['total_messages']} msgs total, +{seven_day_stats['messages']} delta)")
+                    print(f"📝 API tick stored: snapshot_id={snapshot_id}, 5h={five_hour_util}%, 7d={seven_day_util}%")
+
+                    # PHASE 2: Calculate deltas and totals, then update snapshot
+                    calculate_and_update_snapshot(
+                        snapshot_id=snapshot_id,
+                        five_hour_increased=five_hour_increased,
+                        seven_day_increased=seven_day_increased,
+                        five_hour_reset_detected=five_hour_reset_detected,
+                        seven_day_reset_detected=seven_day_reset_detected,
+                        five_hour_reset_time=five_hour_reset_time,
+                        seven_day_reset_time=seven_day_reset_time,
+                        prev_snapshot=prev_snapshot
+                    )
+
                 except Exception as e:
                     print(f"Error saving usage snapshot: {e}")
+                    import traceback
+                    traceback.print_exc()
 
             # Update previous usage values
             previous_usage['five_hour_used'] = five_hour_util

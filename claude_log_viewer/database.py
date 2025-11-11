@@ -30,6 +30,69 @@ def get_db():
         conn.close()
 
 
+def migrate_usage_snapshots_nullable():
+    """
+    Ensure usage snapshot token/message count columns are nullable.
+
+    This migration verifies that the following columns can accept NULL values:
+    - five_hour_tokens_consumed
+    - five_hour_messages_count
+    - seven_day_tokens_consumed
+    - seven_day_messages_count
+    - five_hour_tokens_total
+    - five_hour_messages_total
+    - seven_day_tokens_total
+    - seven_day_messages_total
+
+    Note: SQLite does not support ALTER COLUMN to change NOT NULL constraints.
+    This function validates that columns were created without NOT NULL constraints.
+    If a table was created with the correct schema, this is a no-op.
+
+    This migration is idempotent and safe to run multiple times.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Get current table schema
+        cursor.execute("PRAGMA table_info(usage_snapshots)")
+        columns_info = {row[1]: {'type': row[2], 'notnull': row[3], 'default': row[4]}
+                       for row in cursor.fetchall()}
+
+        # Columns that should be nullable
+        nullable_columns = [
+            'five_hour_tokens_consumed',
+            'five_hour_messages_count',
+            'seven_day_tokens_consumed',
+            'seven_day_messages_count',
+            'five_hour_tokens_total',
+            'five_hour_messages_total',
+            'seven_day_tokens_total',
+            'seven_day_messages_total'
+        ]
+
+        # Verify all columns are nullable (notnull=0 means nullable)
+        all_nullable = True
+        for col_name in nullable_columns:
+            if col_name in columns_info:
+                if columns_info[col_name]['notnull'] == 1:
+                    print(f"⚠ Warning: Column '{col_name}' has NOT NULL constraint")
+                    all_nullable = False
+                else:
+                    print(f"✓ Column '{col_name}' is nullable")
+            else:
+                # Column doesn't exist yet (will be added by ALTER TABLE in another migration)
+                pass
+
+        if all_nullable:
+            print("✓ All usage snapshot count columns are nullable")
+        else:
+            print("⚠ Some columns are NOT NULL - requires table recreation to fix")
+            print("  Run this query to check constraints:")
+            print("  sqlite3 ~/.claude-log-viewer/logviewer.db 'PRAGMA table_info(usage_snapshots)'")
+
+        conn.commit()
+
+
 def migrate_add_fork_tracking():
     """
     Add fork tracking columns to usage_snapshots table.
@@ -147,6 +210,7 @@ def init_db():
         print(f"Database initialized at: {DB_PATH}")
 
         # Run migrations
+        migrate_usage_snapshots_nullable()
         migrate_add_fork_tracking()
 
 
@@ -209,16 +273,18 @@ def insert_snapshot(
     active_sessions: List[str] = None
 ) -> int:
     """
-    Insert a usage snapshot.
+    Insert a usage snapshot into the database.
 
-    Args:
-        timestamp: ISO format timestamp
-        five_hour_used: Tokens used in 5-hour window
-        five_hour_limit: Token limit for 5-hour window
-        seven_day_used: Tokens used in 7-day window
-        seven_day_limit: Token limit for 7-day window
-        five_hour_pct: Percentage of 5-hour limit used
-        seven_day_pct: Percentage of 7-day limit used
+    Required Args:
+        timestamp: ISO format timestamp (NOT NULL)
+        five_hour_used: Tokens used in 5-hour window (NOT NULL)
+        five_hour_limit: Token limit for 5-hour window (NOT NULL)
+        seven_day_used: Tokens used in 7-day window (NOT NULL)
+        seven_day_limit: Token limit for 7-day window (NOT NULL)
+
+    Optional Args (nullable - can be None):
+        five_hour_pct: Percentage of 5-hour limit used (0-100)
+        seven_day_pct: Percentage of 7-day limit used (0-100)
         five_hour_reset: ISO timestamp when 5-hour window resets
         seven_day_reset: ISO timestamp when 7-day window resets
         five_hour_tokens_consumed: Tokens consumed since last snapshot (5h window)
@@ -231,8 +297,17 @@ def insert_snapshot(
         seven_day_messages_total: Running total of messages in current 7d window
         active_sessions: List of session IDs that were active at this snapshot time
 
+    Note:
+        All token/message count fields are nullable to support scenarios where:
+        - First snapshot has no baseline for delta calculation
+        - Usage data is unavailable or incomplete
+        - Fork-aware filtering hasn't been applied yet
+
     Returns:
         The ID of the inserted snapshot
+
+    Raises:
+        ValueError: If active_sessions contains invalid session IDs (logged but doesn't fail)
     """
     # Validate and convert active_sessions
     if active_sessions is not None:
@@ -309,6 +384,216 @@ def get_latest_snapshot() -> Optional[Dict[str, Any]]:
 
         row = cursor.fetchone()
         return dict(row) if row else None
+
+
+def get_snapshot_by_id(snapshot_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Get a specific snapshot by its ID.
+
+    Args:
+        snapshot_id: The snapshot ID to retrieve
+
+    Returns:
+        Snapshot dictionary or None if not found
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT * FROM usage_snapshots
+            WHERE id = ?
+        """, (snapshot_id,))
+
+        row = cursor.fetchone()
+        return dict(row) if row else None
+
+
+def insert_snapshot_tick(
+    timestamp: str,
+    five_hour_used: int,
+    five_hour_limit: int,
+    seven_day_used: int,
+    seven_day_limit: int,
+    five_hour_pct: float = None,
+    seven_day_pct: float = None,
+    five_hour_reset: str = None,
+    seven_day_reset: str = None
+) -> int:
+    """
+    Insert an API tick snapshot with only raw API data (no calculations).
+
+    This is Phase 1 of the two-phase snapshot storage:
+    1. Store API data immediately (this function)
+    2. Calculate and update deltas/totals later (update_snapshot_calculations)
+
+    All delta and total fields are set to NULL initially, enabling offline
+    recalculation per FR6 requirement.
+
+    Required Args:
+        timestamp: ISO format timestamp (NOT NULL)
+        five_hour_used: Percentage used in 5-hour window (0-100)
+        five_hour_limit: Limit for 5-hour window (always 100)
+        seven_day_used: Percentage used in 7-day window (0-100)
+        seven_day_limit: Limit for 7-day window (always 100)
+
+    Optional Args:
+        five_hour_pct: Percentage of 5-hour limit used (0-100)
+        seven_day_pct: Percentage of 7-day limit used (0-100)
+        five_hour_reset: ISO timestamp when 5-hour window resets
+        seven_day_reset: ISO timestamp when 7-day window resets
+
+    Returns:
+        The ID of the inserted snapshot
+
+    Example:
+        >>> snapshot_id = insert_snapshot_tick(
+        ...     timestamp="2025-11-11T10:00:00Z",
+        ...     five_hour_used=75,
+        ...     five_hour_limit=100,
+        ...     seven_day_used=45,
+        ...     seven_day_limit=100,
+        ...     five_hour_pct=75.0,
+        ...     seven_day_pct=45.0,
+        ...     five_hour_reset="2025-11-11T14:00:00Z",
+        ...     seven_day_reset="2025-11-18T10:00:00Z"
+        ... )
+        >>> # All delta/total fields are NULL at this point
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO usage_snapshots (
+                timestamp, five_hour_used, five_hour_limit,
+                seven_day_used, seven_day_limit,
+                five_hour_pct, seven_day_pct,
+                five_hour_reset, seven_day_reset,
+                five_hour_tokens_consumed, five_hour_messages_count,
+                seven_day_tokens_consumed, seven_day_messages_count,
+                five_hour_tokens_total, five_hour_messages_total,
+                seven_day_tokens_total, seven_day_messages_total,
+                active_sessions, recalculated
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0)
+        """, (
+            timestamp, five_hour_used, five_hour_limit,
+            seven_day_used, seven_day_limit,
+            five_hour_pct, seven_day_pct,
+            five_hour_reset, seven_day_reset
+        ))
+        return cursor.lastrowid
+
+
+def update_snapshot_calculations(
+    snapshot_id: int,
+    five_hour_tokens_consumed: int = None,
+    five_hour_messages_count: int = None,
+    seven_day_tokens_consumed: int = None,
+    seven_day_messages_count: int = None,
+    five_hour_tokens_total: int = None,
+    five_hour_messages_total: int = None,
+    seven_day_tokens_total: int = None,
+    seven_day_messages_total: int = None,
+    active_sessions: List[str] = None
+) -> None:
+    """
+    Update calculated fields for a snapshot after API tick has been stored.
+
+    This is Phase 2 of the two-phase snapshot storage:
+    1. Store API data immediately (insert_snapshot_tick)
+    2. Calculate and update deltas/totals (this function)
+
+    All parameters are optional - only provided fields will be updated.
+    Allows selective updates of 5-hour or 7-day window calculations.
+
+    Args:
+        snapshot_id: ID of the snapshot to update
+        five_hour_tokens_consumed: Tokens consumed since last snapshot (5h window)
+        five_hour_messages_count: Messages sent since last snapshot (5h window)
+        seven_day_tokens_consumed: Tokens consumed since last snapshot (7d window)
+        seven_day_messages_count: Messages sent since last snapshot (7d window)
+        five_hour_tokens_total: Running total of tokens in current 5h window
+        five_hour_messages_total: Running total of messages in current 5h window
+        seven_day_tokens_total: Running total of tokens in current 7d window
+        seven_day_messages_total: Running total of messages in current 7d window
+        active_sessions: List of session IDs that were active at snapshot time
+
+    Raises:
+        ValueError: If active_sessions contains invalid session IDs
+
+    Example:
+        >>> # Phase 1: Store API tick
+        >>> snapshot_id = insert_snapshot_tick(...)
+        >>>
+        >>> # Phase 2: Calculate and update
+        >>> update_snapshot_calculations(
+        ...     snapshot_id=snapshot_id,
+        ...     five_hour_tokens_consumed=1000,
+        ...     five_hour_messages_count=5,
+        ...     five_hour_tokens_total=15000,
+        ...     five_hour_messages_total=75,
+        ...     active_sessions=['session-123', 'session-456']
+        ... )
+    """
+    # Validate and convert active_sessions
+    if active_sessions is not None:
+        validated_sessions = validate_session_ids(active_sessions)
+        active_sessions_json = json.dumps(validated_sessions)
+    else:
+        active_sessions_json = None
+
+    # Build UPDATE query dynamically based on provided fields
+    update_fields = []
+    params = []
+
+    if five_hour_tokens_consumed is not None:
+        update_fields.append("five_hour_tokens_consumed = ?")
+        params.append(five_hour_tokens_consumed)
+
+    if five_hour_messages_count is not None:
+        update_fields.append("five_hour_messages_count = ?")
+        params.append(five_hour_messages_count)
+
+    if seven_day_tokens_consumed is not None:
+        update_fields.append("seven_day_tokens_consumed = ?")
+        params.append(seven_day_tokens_consumed)
+
+    if seven_day_messages_count is not None:
+        update_fields.append("seven_day_messages_count = ?")
+        params.append(seven_day_messages_count)
+
+    if five_hour_tokens_total is not None:
+        update_fields.append("five_hour_tokens_total = ?")
+        params.append(five_hour_tokens_total)
+
+    if five_hour_messages_total is not None:
+        update_fields.append("five_hour_messages_total = ?")
+        params.append(five_hour_messages_total)
+
+    if seven_day_tokens_total is not None:
+        update_fields.append("seven_day_tokens_total = ?")
+        params.append(seven_day_tokens_total)
+
+    if seven_day_messages_total is not None:
+        update_fields.append("seven_day_messages_total = ?")
+        params.append(seven_day_messages_total)
+
+    if active_sessions_json is not None:
+        update_fields.append("active_sessions = ?")
+        params.append(active_sessions_json)
+
+    # If no fields to update, return early
+    if not update_fields:
+        return
+
+    # Add snapshot_id to params for WHERE clause
+    params.append(snapshot_id)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+        query = f"""
+            UPDATE usage_snapshots
+            SET {', '.join(update_fields)}
+            WHERE id = ?
+        """
+        cursor.execute(query, params)
 
 
 def insert_session(

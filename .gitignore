@@ -141,3 +141,4 @@ logviewer.db
 claude_log_viewer/analysis/*.jsonl
 claude_log_viewer/analysis/claude-dag-sessions/*.jsonl
 claude_log_viewer/analysis/main-session-test/*.jsonl
+screenshots/*
