@@ -358,7 +358,7 @@ function createEntryRow(entry) {
             const deltaMessagesValue = (deltaMessages === null || deltaMessages === undefined) ? 0 : deltaMessages;
             const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokensValue)})`;
             const messagesStr = `${totalMessages} (+${deltaMessagesValue})`;
-            return `${tokensStr} tokens | ${totalMessages === 1 ? 'message' : 'messages'}`;
+            return `${tokensStr} tokens | ${messagesStr}`;
         };
 
         const fiveHourStats = formatStat(

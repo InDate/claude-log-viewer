@@ -3,6 +3,7 @@ SQLite database for persistent storage of usage statistics and session details.
 """
 import sqlite3
 import os
+import json
 from datetime import datetime
 from typing import Optional, List, Dict, Any
 from contextlib import contextmanager
@@ -27,6 +28,48 @@ def get_db():
         raise e
     finally:
         conn.close()
+
+
+def migrate_add_fork_tracking():
+    """
+    Add fork tracking columns to usage_snapshots table.
+
+    Adds:
+    - active_sessions TEXT: JSON array of session IDs active at this snapshot
+    - recalculated INTEGER: Flag indicating if totals have been recalculated (0 or 1)
+
+    This migration is idempotent - it checks if columns exist before adding them.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Check if columns already exist using PRAGMA table_info
+        cursor.execute("PRAGMA table_info(usage_snapshots)")
+        columns = {row[1] for row in cursor.fetchall()}
+
+        # Add active_sessions column if it doesn't exist
+        if 'active_sessions' not in columns:
+            print("Adding 'active_sessions' column to usage_snapshots table...")
+            cursor.execute("""
+                ALTER TABLE usage_snapshots
+                ADD COLUMN active_sessions TEXT
+            """)
+            print("✓ Added 'active_sessions' column")
+        else:
+            print("✓ Column 'active_sessions' already exists")
+
+        # Add recalculated column if it doesn't exist
+        if 'recalculated' not in columns:
+            print("Adding 'recalculated' column to usage_snapshots table...")
+            cursor.execute("""
+                ALTER TABLE usage_snapshots
+                ADD COLUMN recalculated INTEGER DEFAULT 0
+            """)
+            print("✓ Added 'recalculated' column")
+        else:
+            print("✓ Column 'recalculated' already exists")
+
+        conn.commit()
 
 
 def init_db():
@@ -55,6 +98,8 @@ def init_db():
                 five_hour_messages_total INTEGER,
                 seven_day_tokens_total INTEGER,
                 seven_day_messages_total INTEGER,
+                active_sessions TEXT,
+                recalculated INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -101,6 +146,47 @@ def init_db():
         conn.commit()
         print(f"Database initialized at: {DB_PATH}")
 
+        # Run migrations
+        migrate_add_fork_tracking()
+
+
+def validate_session_ids(session_ids: List[str]) -> List[str]:
+    """
+    Validate session IDs before storing in database.
+
+    Args:
+        session_ids: List of session ID strings
+
+    Returns:
+        Validated list of session IDs
+
+    Raises:
+        ValueError: If any session ID is invalid
+    """
+    if not session_ids:
+        return []
+
+    validated = []
+    for session_id in session_ids:
+        # Session IDs should be non-empty strings
+        if not isinstance(session_id, str):
+            raise ValueError(f"Session ID must be string, got {type(session_id)}")
+
+        if not session_id or not session_id.strip():
+            raise ValueError("Session ID cannot be empty")
+
+        # Session IDs should be reasonable length (UUIDs are ~36 chars)
+        if len(session_id) > 100:
+            raise ValueError(f"Session ID too long: {len(session_id)} chars")
+
+        # Session IDs should be alphanumeric with hyphens
+        if not all(c.isalnum() or c in '-_' for c in session_id):
+            raise ValueError(f"Session ID contains invalid characters: {session_id}")
+
+        validated.append(session_id.strip())
+
+    return validated
+
 
 def insert_snapshot(
     timestamp: str,
@@ -119,14 +205,47 @@ def insert_snapshot(
     five_hour_tokens_total: int = None,
     five_hour_messages_total: int = None,
     seven_day_tokens_total: int = None,
-    seven_day_messages_total: int = None
+    seven_day_messages_total: int = None,
+    active_sessions: List[str] = None
 ) -> int:
     """
     Insert a usage snapshot.
 
+    Args:
+        timestamp: ISO format timestamp
+        five_hour_used: Tokens used in 5-hour window
+        five_hour_limit: Token limit for 5-hour window
+        seven_day_used: Tokens used in 7-day window
+        seven_day_limit: Token limit for 7-day window
+        five_hour_pct: Percentage of 5-hour limit used
+        seven_day_pct: Percentage of 7-day limit used
+        five_hour_reset: ISO timestamp when 5-hour window resets
+        seven_day_reset: ISO timestamp when 7-day window resets
+        five_hour_tokens_consumed: Tokens consumed since last snapshot (5h window)
+        five_hour_messages_count: Messages sent since last snapshot (5h window)
+        seven_day_tokens_consumed: Tokens consumed since last snapshot (7d window)
+        seven_day_messages_count: Messages sent since last snapshot (7d window)
+        five_hour_tokens_total: Running total of tokens in current 5h window
+        five_hour_messages_total: Running total of messages in current 5h window
+        seven_day_tokens_total: Running total of tokens in current 7d window
+        seven_day_messages_total: Running total of messages in current 7d window
+        active_sessions: List of session IDs that were active at this snapshot time
+
     Returns:
         The ID of the inserted snapshot
     """
+    # Validate and convert active_sessions
+    if active_sessions is not None:
+        try:
+            validated_sessions = validate_session_ids(active_sessions)
+            active_sessions_json = json.dumps(validated_sessions)
+        except ValueError as e:
+            # Log error but don't fail insertion - just store None
+            print(f"Warning: Invalid active_sessions: {e}")
+            active_sessions_json = None
+    else:
+        active_sessions_json = None
+
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
@@ -138,8 +257,9 @@ def insert_snapshot(
                 five_hour_tokens_consumed, five_hour_messages_count,
                 seven_day_tokens_consumed, seven_day_messages_count,
                 five_hour_tokens_total, five_hour_messages_total,
-                seven_day_tokens_total, seven_day_messages_total
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                seven_day_tokens_total, seven_day_messages_total,
+                active_sessions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             timestamp, five_hour_used, five_hour_limit,
             seven_day_used, seven_day_limit,
@@ -148,7 +268,8 @@ def insert_snapshot(
             five_hour_tokens_consumed, five_hour_messages_count,
             seven_day_tokens_consumed, seven_day_messages_count,
             five_hour_tokens_total, five_hour_messages_total,
-            seven_day_tokens_total, seven_day_messages_total
+            seven_day_tokens_total, seven_day_messages_total,
+            active_sessions_json
         ))
         return cursor.lastrowid
 

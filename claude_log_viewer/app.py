@@ -15,7 +15,8 @@ import time
 import subprocess
 import requests
 import argparse
-from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH, get_db
+from collections import defaultdict
+from .database import init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot, insert_session, DB_PATH, get_db, migrate_add_fork_tracking
 from .token_counter import count_message_tokens
 from .timeline_builder import build_timeline
 
@@ -27,6 +28,7 @@ CLAUDE_TODOS_DIR = Path.home() / '.claude' / 'todos'
 
 # Store latest entries
 latest_entries = []
+latest_entries_lock = threading.Lock()  # Protect against race conditions with file watcher
 max_entries = 500  # Keep last 500 entries in memory (default, configurable via CLI)
 file_age_days = 2  # Only load files modified in last N days (default, configurable via CLI)
 
@@ -317,8 +319,9 @@ def load_latest_entries(file_path=None):
     # Sort by timestamp if available
     entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
 
-    # Keep only the latest entries
-    latest_entries = entries[:max_entries]
+    # Keep only the latest entries (protected by lock)
+    with latest_entries_lock:
+        latest_entries = entries[:max_entries]
 
 
 def load_entries_for_time_range(start_timestamp, end_timestamp=None):
@@ -352,8 +355,9 @@ def load_entries_for_time_range(start_timestamp, end_timestamp=None):
         if file_mtime >= start_dt - timedelta(hours=1):
             files_to_check.append(file)
 
-    # Track which timestamps we already have in memory
-    existing_timestamps = {entry.get('timestamp') for entry in latest_entries if entry.get('timestamp')}
+    # Track which timestamps we already have in memory (protected by lock)
+    with latest_entries_lock:
+        existing_timestamps = {entry.get('timestamp') for entry in latest_entries if entry.get('timestamp')}
 
     new_entries = []
     for file in files_to_check:
@@ -400,13 +404,14 @@ def load_entries_for_time_range(start_timestamp, end_timestamp=None):
         except Exception as e:
             print(f"Error reading {file} for time range: {e}")
 
-    # Add new entries to latest_entries
+    # Add new entries to latest_entries (protected by lock)
     if new_entries:
-        latest_entries.extend(new_entries)
-        # Re-sort by timestamp
-        latest_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
-        # Keep only max_entries
-        latest_entries = latest_entries[:max_entries]
+        with latest_entries_lock:
+            latest_entries.extend(new_entries)
+            # Re-sort by timestamp
+            latest_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+            # Keep only max_entries
+            latest_entries = latest_entries[:max_entries]
         print(f"Loaded {len(new_entries)} entries from time range {start_timestamp} to {end_timestamp}")
 
     return len(new_entries)
@@ -444,12 +449,23 @@ def format_usage_snapshot(snapshot):
 
 @app.route('/api/entries')
 def get_entries():
-    """Get latest entries with usage snapshots merged"""
-    all_entries = list(latest_entries)  # Start with log entries
+    """Get latest entries with usage snapshots merged - filtered to active session path"""
+    # Take snapshot of entries (protected by lock)
+    with latest_entries_lock:
+        entries_snapshot = list(latest_entries)
 
-    # Get time range from latest_entries
-    if latest_entries:
-        timestamps = [e.get('timestamp') for e in latest_entries if e.get('timestamp')]
+    # Detect active sessions for fork-aware UI filtering
+    active_session_ids = detect_active_sessions(entries_snapshot)
+
+    # Filter to show only active conversation path in UI
+    filtered_entries = filter_entries_by_active_sessions(entries_snapshot, active_session_ids)
+
+    # Start with filtered log entries
+    all_entries = list(filtered_entries)
+
+    # Get time range from filtered entries
+    if filtered_entries:
+        timestamps = [e.get('timestamp') for e in filtered_entries if e.get('timestamp')]
         if timestamps:
             start_time = min(timestamps)
             end_time = max(timestamps)
@@ -477,17 +493,26 @@ def get_entries():
             # Limit to max_entries
             all_entries = all_entries[:max_entries]
 
+    # Calculate session stats for debugging
+    total_sessions = len(set(e.get('sessionId') for e in entries_snapshot if e.get('sessionId')))
+
     return jsonify({
         'entries': all_entries,
-        'total': len(all_entries)
+        'total': len(all_entries),
+        'active_session_count': len(active_session_ids),
+        'total_session_count': total_sessions
     })
 
 
 @app.route('/api/fields')
 def get_fields():
     """Get all unique fields across entries"""
+    # Take snapshot of entries (protected by lock)
+    with latest_entries_lock:
+        entries_snapshot = list(latest_entries)
+
     fields = set()
-    for entry in latest_entries:
+    for entry in entries_snapshot:
         fields.update(entry.keys())
     return jsonify(sorted(list(fields)))
 
@@ -496,7 +521,9 @@ def get_fields():
 def refresh():
     """Force refresh all entries"""
     load_latest_entries()
-    return jsonify({'status': 'success', 'total': len(latest_entries)})
+    with latest_entries_lock:
+        total = len(latest_entries)
+    return jsonify({'status': 'success', 'total': total})
 
 
 @app.route('/screenshots/<path:filepath>')
@@ -613,12 +640,138 @@ def get_oauth_token():
         return None
 
 
-def calculate_increment_stats(baseline_timestamp):
+def detect_active_sessions(entries):
+    """
+    Detect active sessions by finding leaf nodes (most recent entries in each branch)
+    and tracing back through their parent chains.
+
+    IMPORTANT: This returns sessions for UI filtering only.
+    Usage tracking counts ALL branches for accurate billing.
+
+    Args:
+        entries: List of log entries
+
+    Returns:
+        set of active session IDs (includes main session and agent sessions)
+    """
+    if not entries:
+        return set()
+
+    # Build parent-child map and entry index
+    entries_by_uuid = {}
+    children_map = defaultdict(list)  # uuid -> list of child uuids
+
+    for entry in entries:
+        uuid = entry.get('uuid')
+        if not uuid:
+            continue
+
+        entries_by_uuid[uuid] = entry
+        parent_uuid = entry.get('parentUuid')
+
+        if parent_uuid:
+            children_map[parent_uuid].append(uuid)
+
+    # Find ALL leaf nodes (entries with no children)
+    leaf_nodes = []
+    for uuid, entry in entries_by_uuid.items():
+        if uuid not in children_map:  # No children = leaf node
+            timestamp = entry.get('timestamp', '')
+            leaf_nodes.append((uuid, timestamp))
+
+    if not leaf_nodes:
+        return set()
+
+    # Sort leaf nodes by timestamp to find most recent branches
+    leaf_nodes.sort(key=lambda x: x[1], reverse=True)
+
+    # Take most recent leaf + any others within 60 seconds (concurrent work)
+    most_recent_timestamp = leaf_nodes[0][1]
+    active_leaves = [leaf_nodes[0][0]]
+
+    for uuid, timestamp in leaf_nodes[1:]:
+        if timestamp and most_recent_timestamp:
+            try:
+                recent_dt = datetime.fromisoformat(most_recent_timestamp.replace('Z', '+00:00'))
+                leaf_dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+
+                if recent_dt - leaf_dt <= timedelta(seconds=60):
+                    active_leaves.append(uuid)
+            except:
+                pass
+
+    # Trace back through parent chains from active leaves
+    active_uuids = set()
+    to_visit = list(active_leaves)
+
+    while to_visit:
+        current_uuid = to_visit.pop()
+
+        if not current_uuid or current_uuid in active_uuids:
+            continue  # Prevents circular references
+
+        active_uuids.add(current_uuid)
+
+        entry = entries_by_uuid.get(current_uuid)
+        if not entry:
+            continue
+
+        # Follow parentUuid backward
+        parent_uuid = entry.get('parentUuid')
+        if parent_uuid:
+            to_visit.append(parent_uuid)
+
+        # Also follow logicalParentUuid (cross-session links)
+        logical_parent_uuid = entry.get('logicalParentUuid')
+        if logical_parent_uuid:
+            to_visit.append(logical_parent_uuid)
+
+    # Extract session IDs from active entries
+    active_session_ids = set()
+    for uuid in active_uuids:
+        entry = entries_by_uuid.get(uuid)
+        if entry:
+            session_id = entry.get('sessionId')
+            if session_id:
+                active_session_ids.add(session_id)
+
+    return active_session_ids
+
+
+def filter_entries_by_active_sessions(entries, active_session_ids):
+    """
+    Filter entries to only include those from active session path.
+
+    Used for UI display to show users their current conversation context.
+    NOT used for usage tracking (which needs all entries for accurate billing).
+
+    Args:
+        entries: List of log entries
+        active_session_ids: Set of active session IDs from detect_active_sessions()
+
+    Returns:
+        Filtered list of entries from active sessions only
+    """
+    if not active_session_ids:
+        return entries
+
+    return [
+        entry for entry in entries
+        if entry.get('sessionId') in active_session_ids
+    ]
+
+
+def calculate_increment_stats(baseline_timestamp, active_session_ids=None):
     """
     Calculate tokens consumed and message count since baseline timestamp.
 
+    IMPORTANT: This counts ALL tokens from ALL branches for accurate billing tracking.
+    Claude API processes and bills for all conversation attempts, including abandoned forks.
+    The active_session_ids parameter is DEPRECATED and ignored (kept for backward compatibility).
+
     Args:
         baseline_timestamp: ISO timestamp string to calculate from, or None
+        active_session_ids: DEPRECATED - no longer used, counts all sessions
 
     Returns:
         dict with 'tokens' and 'messages' keys
@@ -629,11 +782,16 @@ def calculate_increment_stats(baseline_timestamp):
     total_tokens = 0
     message_count = 0
 
-    # Query all entries since baseline
-    for entry in latest_entries:
+    # Take snapshot of entries (protected by lock)
+    with latest_entries_lock:
+        entries_snapshot = list(latest_entries)
+
+    # CORRECT: Query ALL entries since baseline (no session filtering)
+    # This accurately reflects what Claude API actually processed and billed
+    for entry in entries_snapshot:
         entry_timestamp = entry.get('timestamp', '')
         if entry_timestamp and entry_timestamp >= baseline_timestamp:
-            # Sum content_tokens
+            # NO FILTERING - count all tokens from all branches
             content_tokens = entry.get('content_tokens', 0)
             if content_tokens:
                 total_tokens += content_tokens
@@ -736,8 +894,8 @@ def fetch_usage_data():
             should_snapshot = False
             five_hour_increased = False
             seven_day_increased = False
-            five_hour_reset = False
-            seven_day_reset = False
+            five_hour_reset_detected = False
+            seven_day_reset_detected = False
 
             if previous_usage['five_hour_used'] is not None or previous_usage['seven_day_used'] is not None:
                 if previous_usage['five_hour_used'] is not None:
@@ -747,7 +905,7 @@ def fetch_usage_data():
                     elif five_hour_util < previous_usage['five_hour_used']:
                         # Usage dropped - window was reset
                         should_snapshot = True
-                        five_hour_reset = True
+                        five_hour_reset_detected = True
 
                 if previous_usage['seven_day_used'] is not None:
                     if seven_day_util > previous_usage['seven_day_used']:
@@ -756,7 +914,7 @@ def fetch_usage_data():
                     elif seven_day_util < previous_usage['seven_day_used']:
                         # Usage dropped - window was reset
                         should_snapshot = True
-                        seven_day_reset = True
+                        seven_day_reset_detected = True
 
             # Store snapshot if usage increased or window was reset
             if should_snapshot:
@@ -765,8 +923,8 @@ def fetch_usage_data():
                     seven_day_window = data.get('seven_day', {})
 
                     # Get reset times for windowed calculations
-                    five_hour_reset = five_hour_window.get('resets_at')
-                    seven_day_reset = seven_day_window.get('resets_at')
+                    five_hour_reset_time = five_hour_window.get('resets_at')
+                    seven_day_reset_time = seven_day_window.get('resets_at')
 
                     # Calculate increment statistics for each window that increased
                     five_hour_stats = {'tokens': None, 'messages': None, 'total_tokens': None, 'total_messages': None}
@@ -776,7 +934,15 @@ def fetch_usage_data():
                     from .database import get_latest_snapshot
                     prev_snapshot = get_latest_snapshot()
 
-                    if five_hour_increased or five_hour_reset:
+                    # Take snapshot of entries (protected by lock)
+                    with latest_entries_lock:
+                        entries_snapshot = list(latest_entries)
+
+                    # Detect active sessions (fork-aware filtering)
+                    active_session_ids = detect_active_sessions(entries_snapshot)
+                    print(f"🔍 Fork detection: {len(active_session_ids)} active sessions found")
+
+                    if five_hour_increased or five_hour_reset_detected:
                         # Get baseline from previous snapshot's timestamp (when last increment was detected)
                         baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
 
@@ -788,7 +954,10 @@ def fetch_usage_data():
                         five_hour_stats['tokens'] = delta_stats['tokens']
                         five_hour_stats['messages'] = delta_stats['messages']
 
-                    if seven_day_increased or seven_day_reset:
+                        # Debug output
+                        print(f"  📊 5h window: Counted {delta_stats['messages']} messages, {delta_stats['tokens']} tokens (all branches)")
+
+                    if seven_day_increased or seven_day_reset_detected:
                         # Get baseline from previous snapshot's timestamp (when last increment was detected)
                         baseline = prev_snapshot.get('timestamp') if prev_snapshot else None
 
@@ -800,10 +969,13 @@ def fetch_usage_data():
                         seven_day_stats['tokens'] = delta_stats['tokens']
                         seven_day_stats['messages'] = delta_stats['messages']
 
+                        # Debug output
+                        print(f"  📊 7d window: Counted {delta_stats['messages']} messages, {delta_stats['tokens']} tokens (all branches)")
+
                     # Calculate running totals: previous_total + current_delta
 
                     if five_hour_increased:
-                        if five_hour_reset:
+                        if five_hour_reset_detected:
                             # Window was reset - start fresh with current delta only
                             five_hour_stats['total_tokens'] = five_hour_stats['tokens'] or 0
                             five_hour_stats['total_messages'] = five_hour_stats['messages'] or 0
@@ -813,7 +985,7 @@ def fetch_usage_data():
                             prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
                             five_hour_stats['total_tokens'] = (prev_tokens or 0) + (five_hour_stats['tokens'] or 0)
                             five_hour_stats['total_messages'] = (prev_messages or 0) + (five_hour_stats['messages'] or 0)
-                    elif five_hour_reset:
+                    elif five_hour_reset_detected:
                         # Window was reset but no new usage yet - set totals to 0
                         five_hour_stats['total_tokens'] = 0
                         five_hour_stats['total_messages'] = 0
@@ -823,7 +995,7 @@ def fetch_usage_data():
                         five_hour_stats['total_messages'] = prev_snapshot.get('five_hour_messages_total') if prev_snapshot else None
 
                     if seven_day_increased:
-                        if seven_day_reset:
+                        if seven_day_reset_detected:
                             # Window was reset - start fresh with current delta only
                             seven_day_stats['total_tokens'] = seven_day_stats['tokens'] or 0
                             seven_day_stats['total_messages'] = seven_day_stats['messages'] or 0
@@ -833,7 +1005,7 @@ def fetch_usage_data():
                             prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
                             seven_day_stats['total_tokens'] = (prev_tokens or 0) + (seven_day_stats['tokens'] or 0)
                             seven_day_stats['total_messages'] = (prev_messages or 0) + (seven_day_stats['messages'] or 0)
-                    elif seven_day_reset:
+                    elif seven_day_reset_detected:
                         # Window was reset but no new usage yet - set totals to 0
                         seven_day_stats['total_tokens'] = 0
                         seven_day_stats['total_messages'] = 0
@@ -850,8 +1022,8 @@ def fetch_usage_data():
                         seven_day_limit=100,  # API returns percentage, so limit is 100%
                         five_hour_pct=five_hour_util,
                         seven_day_pct=seven_day_util,
-                        five_hour_reset=five_hour_window.get('resets_at'),
-                        seven_day_reset=seven_day_window.get('resets_at'),
+                        five_hour_reset=five_hour_reset_time,
+                        seven_day_reset=seven_day_reset_time,
                         five_hour_tokens_consumed=five_hour_stats['tokens'],
                         five_hour_messages_count=five_hour_stats['messages'],
                         seven_day_tokens_consumed=seven_day_stats['tokens'],
@@ -859,7 +1031,8 @@ def fetch_usage_data():
                         five_hour_tokens_total=five_hour_stats['total_tokens'],
                         five_hour_messages_total=five_hour_stats['total_messages'],
                         seven_day_tokens_total=seven_day_stats['total_tokens'],
-                        seven_day_messages_total=seven_day_stats['total_messages']
+                        seven_day_messages_total=seven_day_stats['total_messages'],
+                        active_sessions=list(active_session_ids)
                     )
                     print(f"📊 Usage snapshot saved: 5h={five_hour_util}% ({five_hour_stats['total_messages']} msgs total, +{five_hour_stats['messages']} delta), 7d={seven_day_util}% ({seven_day_stats['total_messages']} msgs total, +{seven_day_stats['messages']} delta)")
                 except Exception as e:
@@ -912,10 +1085,14 @@ def get_timeline():
     session_id = request.args.get('session_id')
 
     try:
+        # Take snapshot of entries (protected by lock)
+        with latest_entries_lock:
+            entries_snapshot = list(latest_entries)
+
         # Filter entries by session if specified
-        entries_to_analyze = latest_entries
+        entries_to_analyze = entries_snapshot
         if session_id:
-            entries_to_analyze = [e for e in latest_entries
+            entries_to_analyze = [e for e in entries_snapshot
                                  if e.get('sessionId') == session_id]
 
         # Build timeline graph
@@ -980,7 +1157,9 @@ def main():
     # Initial load
     print(f"Loading JSONL files from: {CLAUDE_PROJECTS_DIR}")
     load_latest_entries()
-    print(f"Loaded {len(latest_entries)} entries")
+    with latest_entries_lock:
+        total = len(latest_entries)
+    print(f"Loaded {total} entries")
 
     # Start file watcher in background
     observer = start_file_watcher()
