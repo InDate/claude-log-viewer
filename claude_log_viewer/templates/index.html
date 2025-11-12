@@ -9,6 +9,9 @@
     <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.7.0/build/highlight.min.js"></script>
 </head>
 <body>
+    <!-- Hidden data for JavaScript -->
+    <input type="hidden" id="targetProject" value="{{ target_project or '' }}">
+
     <div class="header">
         <h1>Claude Code Log Viewer</h1>
 
@@ -47,6 +50,11 @@
             <button id="viewToggleBtn" class="view-toggle" title="Toggle between table and timeline view">
                 <span id="viewToggleIcon">📊</span>
                 <span id="viewToggleLabel">Timeline</span>
+            </button>
+
+            <button id="settingsBtn" class="settings-btn" title="Settings">
+                <span>⚙️</span>
+                <span>Settings</span>
             </button>
 
             <div class="control-group auto-refresh" id="autoRefresh">
@@ -92,6 +100,40 @@
             </div>
             <div class="modal-body">
                 <div class="modal-content" id="modalContent"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div class="modal-overlay" id="settingsModal" style="display: none;">
+        <div class="modal-dialog" style="max-width: 900px;">
+            <div class="modal-header">
+                <div class="modal-title">⚙️ Settings</div>
+                <button class="modal-close" id="settingsModalClose">&times;</button>
+            </div>
+            <div class="modal-body" style="padding: 20px;">
+                <div class="settings-group">
+                    <h3 style="margin-top: 0; margin-bottom: 15px; font-size: 16px;">Git Management</h3>
+
+                    <!-- Global Git Toggle -->
+                    <div style="display: flex; align-items: center; justify-content: space-between; padding: 10px; background: #1e1e1e; border-radius: 4px; margin-bottom: 10px;">
+                        <div>
+                            <div style="font-weight: 500; margin-bottom: 4px;">Enable Git Checkpoints (Global)</div>
+                            <div style="font-size: 12px; color: #888;">Master switch for git checkpoint functionality</div>
+                        </div>
+                        <label class="toggle-switch">
+                            <input type="checkbox" id="gitEnabledToggle">
+                            <span class="toggle-slider"></span>
+                        </label>
+                    </div>
+                    <div id="gitStatusMessage" style="font-size: 12px; color: #888; padding: 8px 10px; background: #252525; border-radius: 4px; display: none;"></div>
+
+                    <!-- Per-Project Git Settings -->
+                    <div id="projectGitSettings" style="margin-top: 20px; display: none;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 14px; color: #888;">Per-Project Settings</h4>
+                        <div id="projectGitList"></div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

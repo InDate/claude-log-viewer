@@ -20,8 +20,12 @@ from .database import (
     init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot,
     insert_session, DB_PATH, get_db, migrate_add_fork_tracking,
     insert_snapshot_tick, update_snapshot_calculations, get_snapshot_by_id,
-    get_setting, set_setting, get_all_settings
+    get_setting, set_setting, get_all_settings,
+    get_project_git_enabled, set_project_git_enabled, get_all_project_git_settings,
+    get_repo_git_enabled, set_repo_git_enabled, get_all_repo_git_settings,
+    save_discovered_repos, get_project_repos, get_primary_repo_for_project
 )
+from .git_discovery import discover_repos_for_project, extract_project_names_from_entries
 from .token_counter import count_message_tokens
 from .timeline_builder import build_timeline
 from .usage_calculator import (
@@ -448,7 +452,7 @@ def start_file_watcher():
 @app.route('/')
 def index():
     """Main page"""
-    return render_template('index.html', max_entries=max_entries)
+    return render_template('index.html', max_entries=max_entries, target_project=target_project)
 
 
 def format_usage_snapshot(snapshot):
@@ -1063,7 +1067,7 @@ def fetch_usage_data():
 
                     # PHASE 1: Store API tick immediately (no calculations yet)
                     snapshot_id = insert_snapshot_tick(
-                        timestamp=datetime.utcnow().isoformat() + 'Z',
+                        timestamp=datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
                         five_hour_used=int(five_hour_util),
                         five_hour_limit=100,
                         seven_day_used=int(seven_day_util),
@@ -1169,19 +1173,26 @@ def create_checkpoint_api(session_id):
     }
     """
     try:
-        # Check if git management is enabled
+        # Check if git management is enabled globally
         if not get_setting('git_enabled', False):
             return jsonify({
                 'success': False,
                 'error': 'Git management is disabled. Enable it in settings first.'
             }), 403
 
-        # Get project directory if targeting specific project
-        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+        # Get git repo path for project (from discovery)
+        git_repo_path = get_primary_repo_for_project(target_project) if target_project else None
+
+        # Check if git is enabled for this specific repository
+        if git_repo_path and not get_repo_git_enabled(git_repo_path):
+            return jsonify({
+                'success': False,
+                'error': f'Git checkpoints are disabled for repository "{git_repo_path}". Enable in settings.'
+            }), 403
 
         # Create git manager with database connection
         with get_db() as db:
-            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
+            git_manager = GitRollbackManager(project_dir=git_repo_path, db_connection=db)
 
             # Get request data
             data = request.get_json() or {}
@@ -1259,11 +1270,33 @@ def list_commits_api(session_id):
 def git_status_api():
     """Get git repository status."""
     try:
-        project_dir = CLAUDE_PROJECTS_DIR if target_project else None
+        # Get git repo path for project (from discovery)
+        git_repo_path = get_primary_repo_for_project(target_project) if target_project else None
 
         with get_db() as db:
-            git_manager = GitRollbackManager(project_dir=project_dir, db_connection=db)
-            status = git_manager.get_repo_status()
+            # In all-projects mode (target_project is None), don't initialize git manager
+            # This prevents detecting the log-viewer's own repo
+            if target_project:
+                git_manager = GitRollbackManager(project_dir=git_repo_path, db_connection=db)
+                status = git_manager.get_repo_status()
+
+                # Add discovered repos for this specific project
+                repos = get_project_repos(target_project)
+                status['discovered_repos'] = repos
+            else:
+                # All-projects mode: return status indicating no specific repo
+                # This will trigger the "Discover All Projects" button in the UI
+                status = {
+                    'is_git_repo': False,
+                    'repo_path': None,
+                    'current_branch': None,
+                    'mode': 'all-projects'
+                }
+
+                # Include count of discovered repos across all projects
+                cursor = db.execute('SELECT COUNT(DISTINCT repo_path) FROM project_git_repos')
+                discovered_count = cursor.fetchone()[0]
+                status['discovered_repos_count'] = discovered_count
 
             return jsonify(status)
 
@@ -1333,6 +1366,293 @@ def set_setting_api(key):
             'key': key,
             'value': data['value']
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/git-settings', methods=['GET'])
+def get_all_project_git_settings_api():
+    """Get git settings for all projects."""
+    try:
+        settings = get_all_project_git_settings()
+        return jsonify(settings)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/<project_name>/git-enabled', methods=['GET'])
+def get_project_git_enabled_api(project_name):
+    """Check if git is enabled for a specific project."""
+    try:
+        enabled = get_project_git_enabled(project_name)
+        return jsonify({
+            'project_name': project_name,
+            'git_enabled': enabled
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/<project_name>/git-enabled', methods=['POST'])
+def set_project_git_enabled_api(project_name):
+    """
+    Enable or disable git for a specific project.
+
+    Request body (JSON):
+    {
+        "enabled": true/false
+    }
+    """
+    try:
+        data = request.get_json()
+        if 'enabled' not in data:
+            return jsonify({'error': 'Missing enabled in request body'}), 400
+
+        # Check if global git is enabled
+        if not get_setting('git_enabled', False):
+            return jsonify({
+                'success': False,
+                'error': 'Global git management must be enabled first'
+            }), 403
+
+        enabled = bool(data['enabled'])
+        set_project_git_enabled(project_name, enabled)
+
+        return jsonify({
+            'success': True,
+            'project_name': project_name,
+            'git_enabled': enabled
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/repos/git-settings', methods=['GET'])
+def get_all_repo_git_settings_api():
+    """Get git settings for all repositories."""
+    try:
+        settings = get_all_repo_git_settings()
+        return jsonify(settings)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/repos/<path:repo_path>/git-enabled', methods=['GET'])
+def get_repo_git_enabled_api(repo_path):
+    """Check if git is enabled for a specific repository."""
+    try:
+        enabled = get_repo_git_enabled(repo_path)
+        return jsonify({
+            'repo_path': repo_path,
+            'git_enabled': enabled
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/repos/<path:repo_path>/git-enabled', methods=['POST'])
+def set_repo_git_enabled_api(repo_path):
+    """
+    Enable or disable git for a specific repository.
+
+    Request body (JSON):
+    {
+        "enabled": true/false
+    }
+    """
+    try:
+        data = request.get_json()
+        if 'enabled' not in data:
+            return jsonify({'error': 'Missing enabled in request body'}), 400
+
+        # Check if global git is enabled
+        if not get_setting('git_enabled', False):
+            return jsonify({
+                'success': False,
+                'error': 'Global git management must be enabled first'
+            }), 403
+
+        enabled = bool(data['enabled'])
+        set_repo_git_enabled(repo_path, enabled)
+
+        return jsonify({
+            'success': True,
+            'repo_path': repo_path,
+            'git_enabled': enabled
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/<project_name>/discover-git', methods=['POST'])
+def discover_git_for_project_api(project_name):
+    """
+    Discover git repositories for a project by analyzing JSONL entries.
+
+    Scans recent entries for file operations, discovers git repos from paths.
+    Saves discovered repos to database.
+
+    Returns:
+    {
+        'success': True,
+        'repos': ['/path/to/repo1', '/path/to/repo2'],
+        'file_counts': {'/path/to/repo1': 45, '/path/to/repo2': 3},
+        'primary_repo': '/path/to/repo1',
+        'total_files': 48,
+        'entries_scanned': 150
+    }
+    """
+    try:
+        # Get latest entries snapshot
+        with latest_entries_lock:
+            entries_snapshot = list(latest_entries)
+
+        # Discover repos from entries
+        discovery_result = discover_repos_for_project(entries_snapshot, project_name)
+
+        # Save discovered repos to database
+        if discovery_result['repos']:
+            save_discovered_repos(
+                project_name,
+                discovery_result['file_counts'],
+                discovery_result['primary_repo']
+            )
+
+        return jsonify({
+            'success': True,
+            **discovery_result
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/discover-all', methods=['POST'])
+def discover_all_projects_api():
+    """
+    Discover git repositories for ALL projects by analyzing JSONL entries.
+
+    Extracts all unique project names from entries, runs discovery for each,
+    and saves all discovered repos to database.
+
+    Returns:
+    {
+        'success': True,
+        'projects_scanned': 3,
+        'total_repos': 5,
+        'results': {
+            'project1': {
+                'repos': ['/path/to/repo1'],
+                'file_counts': {'/path/to/repo1': 45},
+                'primary_repo': '/path/to/repo1'
+            },
+            'project2': {...}
+        }
+    }
+    """
+    try:
+        # Get latest entries snapshot
+        with latest_entries_lock:
+            entries_snapshot = list(latest_entries)
+
+        # Extract all project names
+        project_names = extract_project_names_from_entries(entries_snapshot)
+
+        if not project_names:
+            return jsonify({
+                'success': False,
+                'error': 'No projects found in loaded entries'
+            })
+
+        # Discover repos for each project
+        all_results = {}
+        total_repos = 0
+
+        for project_name in project_names:
+            discovery_result = discover_repos_for_project(entries_snapshot, project_name)
+
+            # Save discovered repos to database
+            if discovery_result['repos']:
+                save_discovered_repos(
+                    project_name,
+                    discovery_result['file_counts'],
+                    discovery_result['primary_repo']
+                )
+                total_repos += len(discovery_result['repos'])
+
+            all_results[project_name] = discovery_result
+
+        return jsonify({
+            'success': True,
+            'projects_scanned': len(project_names),
+            'total_repos': total_repos,
+            'results': all_results
+        })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/<project_name>/git-repos', methods=['GET'])
+def get_project_repos_api(project_name):
+    """Get discovered git repositories for a project."""
+    try:
+        repos = get_project_repos(project_name)
+        return jsonify({
+            'project_name': project_name,
+            'repos': repos
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/projects/all-discovered', methods=['GET'])
+def get_all_discovered_projects_api():
+    """
+    Get all discovered git repositories, grouped and deduplicated by repo path.
+
+    Returns repos grouped by their path, with all sessions that use each repo.
+    """
+    try:
+        with get_db() as db:
+            # Get all repos with their associated projects/sessions
+            cursor = db.execute('''
+                SELECT repo_path, project_name, is_primary, file_count, discovered_at
+                FROM project_git_repos
+                ORDER BY repo_path, project_name
+            ''')
+            all_repos = cursor.fetchall()
+
+            # Group by repo_path and aggregate sessions
+            repos_grouped = {}
+            for row in all_repos:
+                repo_path, project_name, is_primary, file_count, discovered_at = row
+
+                if repo_path not in repos_grouped:
+                    repos_grouped[repo_path] = {
+                        'repo_path': repo_path,
+                        'total_files': 0,
+                        'sessions': [],
+                        'discovered_at': discovered_at
+                    }
+
+                repos_grouped[repo_path]['total_files'] += file_count
+                repos_grouped[repo_path]['sessions'].append({
+                    'session_id': project_name,
+                    'file_count': file_count,
+                    'is_primary': bool(is_primary)
+                })
+
+            # Convert to list and sort by total file count (most active first)
+            repos_list = sorted(
+                repos_grouped.values(),
+                key=lambda x: x['total_files'],
+                reverse=True
+            )
+
+            return jsonify({
+                'repos': repos_list
+            })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

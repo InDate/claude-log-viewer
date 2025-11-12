@@ -135,6 +135,213 @@ def migrate_add_fork_tracking():
         conn.commit()
 
 
+def migrate_add_settings_table():
+    """
+    Add settings table for user preferences.
+
+    Creates settings table with key-value storage.
+    This migration is idempotent and safe to run multiple times.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Create settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✓ Created table 'settings'")
+
+        # Set default values for new settings
+        cursor.execute("""
+            INSERT OR IGNORE INTO settings (key, value)
+            VALUES ('git_enabled', 'false')
+        """)
+        print("✓ Set default git_enabled = false")
+
+        conn.commit()
+        print("✓ Settings table migration complete")
+
+
+def migrate_add_project_git_settings():
+    """
+    Add per-project git settings table.
+
+    Allows enabling/disabling git checkpoints on a per-project basis.
+    This migration is idempotent and safe to run multiple times.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Create project_git_settings table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS project_git_settings (
+                project_name TEXT PRIMARY KEY,
+                git_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✓ Created table 'project_git_settings'")
+
+        # Create repo_git_settings table for per-repo git enable/disable
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS repo_git_settings (
+                repo_path TEXT PRIMARY KEY,
+                git_enabled INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✓ Created table 'repo_git_settings'")
+
+        # Create project_git_repos table for discovered repositories
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS project_git_repos (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                project_name TEXT NOT NULL,
+                repo_path TEXT NOT NULL,
+                is_primary INTEGER DEFAULT 0,
+                file_count INTEGER DEFAULT 0,
+                discovered_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(project_name, repo_path)
+            )
+        """)
+        print("✓ Created table 'project_git_repos'")
+
+        # Create indexes
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_project_repos_project
+            ON project_git_repos(project_name)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_project_repos_primary
+            ON project_git_repos(project_name, is_primary)
+        """)
+        print("✓ Created indexes for project_git_repos")
+
+        conn.commit()
+        print("✓ Project git settings table migration complete")
+
+
+def migrate_add_git_tables():
+    """
+    Add git rollback tables for checkpoint and commit tracking.
+
+    Creates three new tables:
+    - git_checkpoints: Stores checkpoint metadata (session start, manual, fork points)
+    - git_commits: Tracks auto-commits from tool operations
+    - conversation_forks: Links conversation forks to git checkpoints
+
+    This migration is idempotent and safe to run multiple times.
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Create git_checkpoints table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS git_checkpoints (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_uuid TEXT NOT NULL,
+                checkpoint_type TEXT NOT NULL,
+                commit_hash TEXT NOT NULL,
+                message_uuid TEXT,
+                parent_uuid TEXT,
+                timestamp TEXT NOT NULL,
+                status TEXT DEFAULT 'active',
+                description TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✓ Created table 'git_checkpoints'")
+
+        # Create indexes for git_checkpoints
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_checkpoints_session
+            ON git_checkpoints(session_uuid)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_checkpoints_message
+            ON git_checkpoints(message_uuid)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_checkpoints_timestamp
+            ON git_checkpoints(timestamp)
+        """)
+        print("✓ Created indexes for git_checkpoints")
+
+        # Create git_commits table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS git_commits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_uuid TEXT NOT NULL,
+                agent_id TEXT,
+                commit_hash TEXT NOT NULL,
+                tool_name TEXT NOT NULL,
+                tool_use_id TEXT,
+                description TEXT,
+                timestamp TEXT NOT NULL,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        print("✓ Created table 'git_commits'")
+
+        # Create indexes for git_commits
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_commits_session
+            ON git_commits(session_uuid)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_commits_hash
+            ON git_commits(commit_hash)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_commits_timestamp
+            ON git_commits(timestamp)
+        """)
+        print("✓ Created indexes for git_commits")
+
+        # Create conversation_forks table
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_forks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                parent_uuid TEXT NOT NULL,
+                parent_session_id TEXT NOT NULL,
+                child_uuid TEXT NOT NULL,
+                child_session_id TEXT NOT NULL,
+                fork_timestamp TEXT NOT NULL,
+                checkpoint_id INTEGER,
+                message_uuid TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (checkpoint_id) REFERENCES git_checkpoints(id)
+            )
+        """)
+        print("✓ Created table 'conversation_forks'")
+
+        # Create indexes for conversation_forks
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forks_parent
+            ON conversation_forks(parent_uuid)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forks_child
+            ON conversation_forks(child_uuid)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forks_checkpoint
+            ON conversation_forks(checkpoint_id)
+        """)
+        cursor.execute("""
+            CREATE INDEX IF NOT EXISTS idx_forks_message
+            ON conversation_forks(message_uuid)
+        """)
+        print("✓ Created indexes for conversation_forks")
+
+        conn.commit()
+        print("✓ Git rollback tables migration complete")
+
+
 def init_db():
     """Initialize database schema."""
     with get_db() as conn:
@@ -212,6 +419,9 @@ def init_db():
         # Run migrations
         migrate_usage_snapshots_nullable()
         migrate_add_fork_tracking()
+        migrate_add_settings_table()
+        migrate_add_project_git_settings()
+        migrate_add_git_tables()
 
 
 def validate_session_ids(session_ids: List[str]) -> List[str]:
@@ -676,6 +886,302 @@ def get_total_stats() -> Dict[str, Any]:
 
         row = cursor.fetchone()
         return dict(row) if row else {}
+
+
+def get_setting(key: str, default: Any = None) -> Any:
+    """
+    Get a setting value from the database.
+
+    Args:
+        key: Setting key
+        default: Default value if setting doesn't exist
+
+    Returns:
+        Setting value (parsed as JSON if possible) or default
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT value FROM settings WHERE key = ?", (key,))
+        row = cursor.fetchone()
+
+        if row is None:
+            return default
+
+        value = row[0]
+
+        # Try to parse as JSON for boolean/number types
+        if value in ('true', 'false'):
+            return value == 'true'
+        elif value.isdigit():
+            return int(value)
+        else:
+            return value
+
+
+def set_setting(key: str, value: Any) -> None:
+    """
+    Set a setting value in the database.
+
+    Args:
+        key: Setting key
+        value: Setting value (will be converted to string)
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Convert boolean to string
+        if isinstance(value, bool):
+            value_str = 'true' if value else 'false'
+        else:
+            value_str = str(value)
+
+        cursor.execute("""
+            INSERT INTO settings (key, value, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(key) DO UPDATE SET
+                value = excluded.value,
+                updated_at = CURRENT_TIMESTAMP
+        """, (key, value_str))
+
+        conn.commit()
+
+
+def get_all_settings() -> Dict[str, Any]:
+    """
+    Get all settings from the database.
+
+    Returns:
+        Dictionary of all settings with parsed values
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT key, value FROM settings")
+
+        settings = {}
+        for row in cursor.fetchall():
+            key, value = row[0], row[1]
+
+            # Parse value
+            if value in ('true', 'false'):
+                settings[key] = (value == 'true')
+            elif value.isdigit():
+                settings[key] = int(value)
+            else:
+                settings[key] = value
+
+        return settings
+
+
+def get_project_git_enabled(project_name: str) -> bool:
+    """
+    Check if git is enabled for a specific project.
+
+    Args:
+        project_name: Project name
+
+    Returns:
+        True if git is enabled for this project
+    """
+    # First check global setting
+    if not get_setting('git_enabled', False):
+        return False
+
+    # Then check project-specific setting
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT git_enabled FROM project_git_settings WHERE project_name = ?",
+            (project_name,)
+        )
+        row = cursor.fetchone()
+
+        # Default to False if no setting exists
+        return bool(row[0]) if row else False
+
+
+def set_project_git_enabled(project_name: str, enabled: bool) -> None:
+    """
+    Enable or disable git for a specific project.
+
+    Args:
+        project_name: Project name
+        enabled: True to enable, False to disable
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO project_git_settings (project_name, git_enabled, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(project_name) DO UPDATE SET
+                git_enabled = excluded.git_enabled,
+                updated_at = CURRENT_TIMESTAMP
+        """, (project_name, 1 if enabled else 0))
+
+        conn.commit()
+
+
+def get_all_project_git_settings() -> Dict[str, bool]:
+    """
+    Get git enabled status for all projects.
+
+    Returns:
+        Dictionary mapping project names to git enabled status
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT project_name, git_enabled FROM project_git_settings")
+
+        return {row[0]: bool(row[1]) for row in cursor.fetchall()}
+
+
+def get_repo_git_enabled(repo_path: str) -> bool:
+    """
+    Check if git is enabled for a specific repository.
+
+    Args:
+        repo_path: Repository path
+
+    Returns:
+        True if git is enabled for this repository
+    """
+    # First check global setting
+    if not get_setting('git_enabled', False):
+        return False
+
+    # Then check repo-specific setting
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT git_enabled FROM repo_git_settings WHERE repo_path = ?",
+            (repo_path,)
+        )
+        row = cursor.fetchone()
+
+        # Default to False if no setting exists
+        return bool(row[0]) if row else False
+
+
+def set_repo_git_enabled(repo_path: str, enabled: bool) -> None:
+    """
+    Enable or disable git for a specific repository.
+
+    Args:
+        repo_path: Repository path
+        enabled: True to enable, False to disable
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO repo_git_settings (repo_path, git_enabled, updated_at)
+            VALUES (?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(repo_path) DO UPDATE SET
+                git_enabled = excluded.git_enabled,
+                updated_at = CURRENT_TIMESTAMP
+        """, (repo_path, 1 if enabled else 0))
+
+        conn.commit()
+
+
+def get_all_repo_git_settings() -> Dict[str, bool]:
+    """
+    Get git enabled status for all repositories.
+
+    Returns:
+        Dictionary mapping repo paths to git enabled status
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT repo_path, git_enabled FROM repo_git_settings")
+
+        return {row[0]: bool(row[1]) for row in cursor.fetchall()}
+
+
+def save_discovered_repos(project_name: str, repo_file_counts: Dict[str, int], primary_repo: Optional[str] = None) -> None:
+    """
+    Save discovered git repositories for a project.
+
+    Args:
+        project_name: Project name
+        repo_file_counts: Dict of {repo_path: file_count}
+        primary_repo: Optional primary repo path (auto-determined if None)
+    """
+    if not repo_file_counts:
+        return
+
+    # Determine primary if not specified
+    if primary_repo is None and repo_file_counts:
+        primary_repo = max(repo_file_counts, key=repo_file_counts.get)
+
+    with get_db() as conn:
+        cursor = conn.cursor()
+
+        # Clear existing repos for this project (fresh discovery)
+        cursor.execute("DELETE FROM project_git_repos WHERE project_name = ?", (project_name,))
+
+        # Insert discovered repos
+        for repo_path, file_count in repo_file_counts.items():
+            is_primary = 1 if repo_path == primary_repo else 0
+
+            cursor.execute("""
+                INSERT INTO project_git_repos (project_name, repo_path, is_primary, file_count)
+                VALUES (?, ?, ?, ?)
+            """, (project_name, repo_path, is_primary, file_count))
+
+        conn.commit()
+
+
+def get_project_repos(project_name: str) -> List[Dict[str, Any]]:
+    """
+    Get all discovered git repositories for a project.
+
+    Args:
+        project_name: Project name
+
+    Returns:
+        List of repo dicts with path, is_primary, file_count
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT repo_path, is_primary, file_count, discovered_at
+            FROM project_git_repos
+            WHERE project_name = ?
+            ORDER BY is_primary DESC, file_count DESC
+        """, (project_name,))
+
+        repos = []
+        for row in cursor.fetchall():
+            repos.append({
+                'repo_path': row[0],
+                'is_primary': bool(row[1]),
+                'file_count': row[2],
+                'discovered_at': row[3]
+            })
+
+        return repos
+
+
+def get_primary_repo_for_project(project_name: str) -> Optional[str]:
+    """
+    Get the primary git repository path for a project.
+
+    Args:
+        project_name: Project name
+
+    Returns:
+        Path to primary repo, or None if not discovered
+    """
+    with get_db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT repo_path
+            FROM project_git_repos
+            WHERE project_name = ? AND is_primary = 1
+            LIMIT 1
+        """, (project_name,))
+
+        row = cursor.fetchone()
+        return row[0] if row else None
 
 
 if __name__ == '__main__':
