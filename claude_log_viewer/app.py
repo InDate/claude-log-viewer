@@ -15,6 +15,7 @@ import time
 import subprocess
 import requests
 import argparse
+import queue
 from collections import defaultdict
 from .database import (
     init_db, insert_snapshot, get_snapshots_in_range, get_latest_snapshot,
@@ -28,13 +29,14 @@ from .database import (
 from .git_discovery import discover_repos_for_project, extract_project_names_from_entries
 from .token_counter import count_message_tokens
 from .timeline_builder import build_timeline
-from .usage_calculator import (
-    detect_reset, calculate_delta, calculate_total_incremental,
-    FIVE_HOUR_WINDOW, SEVEN_DAY_WINDOW
-)
 from .git_manager import GitRollbackManager
+from .api_poller import ApiPoller
+from .backfill import check_null_snapshots, backfill_all_snapshots_async
 
 app = Flask(__name__)
+
+# API poller for backend-driven usage updates (initialized in main())
+api_poller = None
 
 # Get the Claude projects directory - monitor all projects
 CLAUDE_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
@@ -54,11 +56,36 @@ usage_cache = {
     'cache_duration': 60  # Cache for 60 seconds
 }
 
-# Track previous usage values to detect increments
-previous_usage = {
-    'five_hour_used': None,
-    'seven_day_used': None
-}
+# Work queue for file processing (decouples file watching from processing)
+file_processing_queue = queue.Queue()
+processing_shutdown_event = threading.Event()
+
+
+def file_processing_worker():
+    """
+    Background worker thread that processes file changes from the queue.
+
+    This decouples file watching from file processing, preventing the file
+    watcher from blocking during expensive operations (reading, parsing,
+    token counting, etc.).
+    """
+    while not processing_shutdown_event.is_set():
+        try:
+            # Wait for work with timeout to check shutdown event periodically
+            file_path = file_processing_queue.get(timeout=1.0)
+
+            # Process the file
+            try:
+                load_latest_entries(file_path)
+            except Exception as e:
+                print(f"Error processing file {file_path}: {e}")
+
+            # Mark task as done
+            file_processing_queue.task_done()
+
+        except queue.Empty:
+            # No work available, continue to check shutdown event
+            continue
 
 
 class JSONLHandler(FileSystemEventHandler):
@@ -66,8 +93,10 @@ class JSONLHandler(FileSystemEventHandler):
 
     def on_modified(self, event):
         if event.src_path.endswith('.jsonl'):
-            # Reload all files to maintain complete view
-            load_latest_entries()
+            # Add reload signal to processing queue (non-blocking)
+            # Use None to signal "reload all files" (matches original behavior)
+            # Worker thread will process it asynchronously
+            file_processing_queue.put(None)
 
 
 class TodoHandler(FileSystemEventHandler):
@@ -872,130 +901,14 @@ def calculate_windowed_totals(reset_time, window_hours):
         return {'total_tokens': 0, 'total_messages': 0}
 
 
-def calculate_and_update_snapshot(
-    snapshot_id: int,
-    five_hour_increased: bool,
-    seven_day_increased: bool,
-    five_hour_reset_detected: bool,
-    seven_day_reset_detected: bool,
-    five_hour_reset_time: str,
-    seven_day_reset_time: str,
-    prev_snapshot: dict
-):
-    """
-    Calculate deltas and totals for a snapshot and update the database.
-
-    This is Phase 2 of the two-phase flow:
-    1. API tick already stored (by insert_snapshot_tick)
-    2. Now calculate deltas/totals and update
-
-    Args:
-        snapshot_id: ID of the snapshot to update
-        five_hour_increased: True if 5-hour window usage increased
-        seven_day_increased: True if 7-day window usage increased
-        five_hour_reset_detected: True if 5-hour window was reset
-        seven_day_reset_detected: True if 7-day window was reset
-        five_hour_reset_time: ISO timestamp when 5-hour window resets
-        seven_day_reset_time: ISO timestamp when 7-day window resets
-        prev_snapshot: Previous snapshot dict for baseline reference
-    """
-    # Get baseline timestamp from previous snapshot
-    baseline_timestamp = prev_snapshot.get('timestamp') if prev_snapshot else None
-
-    # Load entries for calculation if we have a baseline
-    if baseline_timestamp:
-        load_entries_for_time_range(baseline_timestamp)
-
-    # Take snapshot of entries for calculation
-    with latest_entries_lock:
-        entries_snapshot = list(latest_entries)
-
-    # Detect active sessions (for fork-aware filtering)
-    active_session_ids = detect_active_sessions(entries_snapshot)
-    print(f"🔍 Fork detection: {len(active_session_ids)} active sessions found")
-
-    # Initialize calculation results
-    five_hour_delta_tokens = None
-    five_hour_delta_messages = None
-    five_hour_total_tokens = None
-    five_hour_total_messages = None
-    seven_day_delta_tokens = None
-    seven_day_delta_messages = None
-    seven_day_total_tokens = None
-    seven_day_total_messages = None
-
-    # Calculate 5-hour window if it changed
-    if five_hour_increased or five_hour_reset_detected:
-        # Calculate delta using usage_calculator
-        delta_result = calculate_delta(entries_snapshot, baseline_timestamp, active_session_ids)
-        five_hour_delta_tokens = delta_result['tokens']
-        five_hour_delta_messages = delta_result['messages']
-
-        # Calculate total using incremental approach
-        prev_tokens = prev_snapshot.get('five_hour_tokens_total', 0) if prev_snapshot else 0
-        prev_messages = prev_snapshot.get('five_hour_messages_total', 0) if prev_snapshot else 0
-
-        five_hour_total_tokens, five_hour_total_messages = calculate_total_incremental(
-            prev_tokens or 0,
-            prev_messages or 0,
-            five_hour_delta_tokens,
-            five_hour_delta_messages,
-            five_hour_reset_detected
-        )
-
-        print(f"  📊 5h window: Counted {five_hour_delta_messages} messages, {five_hour_delta_tokens} tokens (delta)")
-    else:
-        # Window didn't change - preserve previous totals (default to 0 if NULL)
-        if prev_snapshot:
-            five_hour_total_tokens = prev_snapshot.get('five_hour_tokens_total', 0) or 0
-            five_hour_total_messages = prev_snapshot.get('five_hour_messages_total', 0) or 0
-
-    # Calculate 7-day window if it changed
-    if seven_day_increased or seven_day_reset_detected:
-        # Calculate delta using usage_calculator
-        delta_result = calculate_delta(entries_snapshot, baseline_timestamp, active_session_ids)
-        seven_day_delta_tokens = delta_result['tokens']
-        seven_day_delta_messages = delta_result['messages']
-
-        # Calculate total using incremental approach
-        prev_tokens = prev_snapshot.get('seven_day_tokens_total', 0) if prev_snapshot else 0
-        prev_messages = prev_snapshot.get('seven_day_messages_total', 0) if prev_snapshot else 0
-
-        seven_day_total_tokens, seven_day_total_messages = calculate_total_incremental(
-            prev_tokens or 0,
-            prev_messages or 0,
-            seven_day_delta_tokens,
-            seven_day_delta_messages,
-            seven_day_reset_detected
-        )
-
-        print(f"  📊 7d window: Counted {seven_day_delta_messages} messages, {seven_day_delta_tokens} tokens (delta)")
-    else:
-        # Window didn't change - preserve previous totals (default to 0 if NULL)
-        if prev_snapshot:
-            seven_day_total_tokens = prev_snapshot.get('seven_day_tokens_total', 0) or 0
-            seven_day_total_messages = prev_snapshot.get('seven_day_messages_total', 0) or 0
-
-    # Update snapshot with calculated values
-    update_snapshot_calculations(
-        snapshot_id=snapshot_id,
-        five_hour_tokens_consumed=five_hour_delta_tokens,
-        five_hour_messages_count=five_hour_delta_messages,
-        seven_day_tokens_consumed=seven_day_delta_tokens,
-        seven_day_messages_count=seven_day_delta_messages,
-        five_hour_tokens_total=five_hour_total_tokens,
-        five_hour_messages_total=five_hour_total_messages,
-        seven_day_tokens_total=seven_day_total_tokens,
-        seven_day_messages_total=seven_day_total_messages,
-        active_sessions=list(active_session_ids)
-    )
-
-    print(f"📊 Usage snapshot updated: 5h total={five_hour_total_messages} msgs (+{five_hour_delta_messages} delta), 7d total={seven_day_total_messages} msgs (+{seven_day_delta_messages} delta)")
-
-
 def fetch_usage_data():
-    """Fetch usage data from Anthropic OAuth API and track increments"""
-    global usage_cache, previous_usage
+    """
+    Fetch usage data from Anthropic OAuth API (for /api/usage endpoint).
+
+    Note: Snapshot creation and calculations are now handled by the API poller
+    in api_poller.py. This function only fetches current API data for display.
+    """
+    global usage_cache
 
     # Check cache
     current_time = time.time()
@@ -1021,84 +934,6 @@ def fetch_usage_data():
 
         if response.status_code == 200:
             data = response.json()
-
-            # Extract usage values (API returns utilization as percentage 0-100)
-            five_hour_util = data.get('five_hour', {}).get('utilization', 0)
-            seven_day_util = data.get('seven_day', {}).get('utilization', 0)
-
-            # Check if usage has increased and which windows changed
-            should_snapshot = False
-            five_hour_increased = False
-            seven_day_increased = False
-            five_hour_reset_detected = False
-            seven_day_reset_detected = False
-
-            if previous_usage['five_hour_used'] is not None or previous_usage['seven_day_used'] is not None:
-                if previous_usage['five_hour_used'] is not None:
-                    if five_hour_util > previous_usage['five_hour_used']:
-                        should_snapshot = True
-                        five_hour_increased = True
-                    elif five_hour_util < previous_usage['five_hour_used']:
-                        # Usage dropped - window was reset
-                        should_snapshot = True
-                        five_hour_reset_detected = True
-
-                if previous_usage['seven_day_used'] is not None:
-                    if seven_day_util > previous_usage['seven_day_used']:
-                        should_snapshot = True
-                        seven_day_increased = True
-                    elif seven_day_util < previous_usage['seven_day_used']:
-                        # Usage dropped - window was reset
-                        should_snapshot = True
-                        seven_day_reset_detected = True
-
-            # Store snapshot if usage increased or window was reset
-            if should_snapshot:
-                try:
-                    five_hour_window = data.get('five_hour', {})
-                    seven_day_window = data.get('seven_day', {})
-
-                    # Get reset times from API response
-                    five_hour_reset_time = five_hour_window.get('resets_at')
-                    seven_day_reset_time = seven_day_window.get('resets_at')
-
-                    # Get previous snapshot for baseline reference
-                    prev_snapshot = get_latest_snapshot()
-
-                    # PHASE 1: Store API tick immediately (no calculations yet)
-                    snapshot_id = insert_snapshot_tick(
-                        timestamp=datetime.utcnow().replace(microsecond=0).isoformat() + 'Z',
-                        five_hour_used=int(five_hour_util),
-                        five_hour_limit=100,
-                        seven_day_used=int(seven_day_util),
-                        seven_day_limit=100,
-                        five_hour_pct=five_hour_util,
-                        seven_day_pct=seven_day_util,
-                        five_hour_reset=five_hour_reset_time,
-                        seven_day_reset=seven_day_reset_time
-                    )
-                    print(f"📝 API tick stored: snapshot_id={snapshot_id}, 5h={five_hour_util}%, 7d={seven_day_util}%")
-
-                    # PHASE 2: Calculate deltas and totals, then update snapshot
-                    calculate_and_update_snapshot(
-                        snapshot_id=snapshot_id,
-                        five_hour_increased=five_hour_increased,
-                        seven_day_increased=seven_day_increased,
-                        five_hour_reset_detected=five_hour_reset_detected,
-                        seven_day_reset_detected=seven_day_reset_detected,
-                        five_hour_reset_time=five_hour_reset_time,
-                        seven_day_reset_time=seven_day_reset_time,
-                        prev_snapshot=prev_snapshot
-                    )
-
-                except Exception as e:
-                    print(f"Error saving usage snapshot: {e}")
-                    import traceback
-                    traceback.print_exc()
-
-            # Update previous usage values
-            previous_usage['five_hour_used'] = five_hour_util
-            previous_usage['seven_day_used'] = seven_day_util
 
             # Update cache
             usage_cache['data'] = data
@@ -1133,6 +968,64 @@ def get_usage_snapshots():
             'snapshots': snapshots,
             'total': len(snapshots)
         })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/usage/latest')
+def get_latest_usage():
+    """
+    Get the latest usage snapshot with calculated values.
+
+    This endpoint returns pre-calculated usage data from the most recent
+    snapshot created by the backend API poller. Frontend should use this
+    instead of polling Claude API directly.
+
+    Returns:
+        JSON with:
+        - snapshot: Latest snapshot data (or null if none exists)
+        - timestamp: ISO timestamp of snapshot
+        - calculated: Calculated usage values from JSONL
+    """
+    try:
+        snapshot = get_latest_snapshot()
+
+        if not snapshot:
+            return jsonify({
+                'snapshot': None,
+                'message': 'No snapshots available yet. Backend poller is starting up.'
+            })
+
+        # Transform snapshot data to frontend format
+        return jsonify({
+            'snapshot': {
+                'id': snapshot['id'],
+                'timestamp': snapshot['timestamp'],
+                'five_hour': {
+                    'pct': snapshot.get('five_hour_pct', 0),
+                    'used': snapshot.get('five_hour_used', 0),
+                    'limit': snapshot.get('five_hour_limit', 0),
+                    'reset': snapshot.get('five_hour_reset'),
+                    'tokens_consumed': snapshot.get('five_hour_tokens_consumed'),
+                    'messages_count': snapshot.get('five_hour_messages_count'),
+                    'tokens_total': snapshot.get('five_hour_tokens_total'),
+                    'messages_total': snapshot.get('five_hour_messages_total')
+                },
+                'seven_day': {
+                    'pct': snapshot.get('seven_day_pct', 0),
+                    'used': snapshot.get('seven_day_used', 0),
+                    'limit': snapshot.get('seven_day_limit', 0),
+                    'reset': snapshot.get('seven_day_reset'),
+                    'tokens_consumed': snapshot.get('seven_day_tokens_consumed'),
+                    'messages_count': snapshot.get('seven_day_messages_count'),
+                    'tokens_total': snapshot.get('seven_day_tokens_total'),
+                    'messages_total': snapshot.get('seven_day_messages_total')
+                },
+                'active_sessions': snapshot.get('active_sessions'),
+                'recalculated': snapshot.get('recalculated', 0) == 1
+            }
+        })
+
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -1671,6 +1564,11 @@ def main():
         help='Reset the database by deleting and recreating it'
     )
     parser.add_argument(
+        '--reset-preload',
+        action='store_true',
+        help='Clear all backfill data and fork detection, then recalculate on this startup'
+    )
+    parser.add_argument(
         '--days',
         type=int,
         default=2,
@@ -1725,12 +1623,84 @@ def main():
     print(f"Initializing database at {DB_PATH}...")
     init_db()
 
-    # Initialize previous usage from latest snapshot
-    latest_snapshot = get_latest_snapshot()
-    if latest_snapshot:
-        previous_usage['five_hour_used'] = latest_snapshot['five_hour_used']
-        previous_usage['seven_day_used'] = latest_snapshot['seven_day_used']
-        print(f"Loaded previous usage: 5h={previous_usage['five_hour_used']}, 7d={previous_usage['seven_day_used']}")
+    # Handle preload reset (clear backfill and forks)
+    if args.reset_preload:
+        print("Resetting preload data (backfill + forks)...")
+        with get_db() as conn:
+            cursor = conn.cursor()
+
+            # Clear all backfill calculations (set to NULL)
+            print("  Clearing backfill calculations...")
+            cursor.execute("""
+                UPDATE usage_snapshots
+                SET five_hour_tokens_consumed = NULL,
+                    five_hour_messages_count = NULL,
+                    seven_day_tokens_consumed = NULL,
+                    seven_day_messages_count = NULL,
+                    five_hour_tokens_total = NULL,
+                    five_hour_messages_total = NULL,
+                    seven_day_tokens_total = NULL,
+                    seven_day_messages_total = NULL
+            """)
+            backfill_cleared = cursor.rowcount
+
+            # Clear all fork detection data
+            print("  Clearing fork detection data...")
+            cursor.execute("DELETE FROM conversation_forks")
+            forks_cleared = cursor.rowcount
+
+            conn.commit()
+
+        print(f"✓ Cleared {backfill_cleared} snapshot calculations")
+        print(f"✓ Cleared {forks_cleared} fork records")
+        print("Backfill will run automatically to recalculate...")
+
+    # Check for NULL snapshots and start backfill if needed
+    print("Checking for NULL usage snapshots...")
+    null_counts = check_null_snapshots()
+    backfill_cutoff_time = None  # Track when backfill completed
+
+    if null_counts['total_nulls'] > 0:
+        print(f"⚠ Found {null_counts['total_nulls']} snapshots with NULL calculated fields")
+        print(f"  - 5-hour window: {null_counts['five_hour_nulls']} snapshots")
+        print(f"  - 7-day window: {null_counts['seven_day_nulls']} snapshots")
+        print("Starting backfill process (blocking - required for fork detection)...")
+        print("⏱ Drawing a line: backfill will process existing data, API poller handles new data after")
+
+        def backfill_progress_callback(progress):
+            """Print backfill progress"""
+            stage = progress.get('stage', '')
+            message = progress.get('message', '')
+            print(f"  [{stage}] {message}")
+
+        # Mark the cutoff time BEFORE backfill starts
+        from datetime import datetime
+        backfill_cutoff_time = datetime.now()
+        print(f"📍 Backfill cutoff time: {backfill_cutoff_time.isoformat()}")
+        print(f"   Data before this time: Processed by backfill")
+        print(f"   Data after this time:  Will be handled by API poller")
+
+        # Run backfill synchronously (blocks until complete)
+        try:
+            result = backfill_all_snapshots_async(
+                CLAUDE_PROJECTS_DIR,
+                callback=backfill_progress_callback
+            )
+            if result['success']:
+                print(f"✓ Backfill complete:")
+                print(f"  - Snapshots updated: {result['snapshots_updated']}")
+                print(f"  - Messages processed: {result['messages_processed']:,}")
+                print(f"  - Forks detected: {result['forks_detected']}")
+                print(f"  - Time: {result['total_time_seconds']:.2f}s")
+                print(f"✓ Clean handoff: API poller will now handle new data from {backfill_cutoff_time.isoformat()}")
+            else:
+                print(f"✗ Backfill failed: {result.get('error', 'Unknown error')}")
+                print("⚠ Server will start but fork data may be incomplete")
+        except Exception as e:
+            print(f"✗ Backfill error: {e}")
+            print("⚠ Server will start but fork data may be incomplete")
+    else:
+        print("✓ All snapshots have calculated values - no backfill needed")
 
     # Initial load
     print(f"Loading JSONL files from: {CLAUDE_PROJECTS_DIR}")
@@ -1739,16 +1709,43 @@ def main():
         total = len(latest_entries)
     print(f"Loaded {total} entries")
 
+    # Start file processing worker thread
+    worker_thread = threading.Thread(target=file_processing_worker, daemon=True, name="FileProcessor")
+    worker_thread.start()
+    print("Started file processing worker")
+
     # Start file watcher in background
     observer = start_file_watcher()
     print("Started file watcher")
+
+    # Initialize and start API poller for backend-driven usage updates
+    global api_poller
+    try:
+        print("Initializing API poller...")
+        api_poller = ApiPoller(poll_interval=10)
+        api_poller.start()
+        print("✓ API poller started (10-second interval)")
+        print("  Backend will automatically poll Claude API and calculate usage")
+        print("  Frontend will read pre-calculated data from /api/usage/latest")
+    except ValueError as e:
+        print(f"⚠ Warning: Could not start API poller: {e}")
+        print("  Usage tracking will not update automatically.")
+        print("  Frontend can still use /api/usage endpoint for manual polling.")
+    except Exception as e:
+        print(f"⚠ Warning: Unexpected error starting API poller: {e}")
 
     try:
         # Run Flask app
         print("Starting web server at http://localhost:5001")
         app.run(host='0.0.0.0', port=5001, debug=True, use_reloader=False)
     except KeyboardInterrupt:
+        print("\nShutting down...")
+        if api_poller:
+            api_poller.stop()
         observer.stop()
+
+    if api_poller:
+        api_poller.stop()
     observer.join()
 
 
