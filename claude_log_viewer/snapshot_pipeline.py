@@ -32,6 +32,38 @@ from .database import (
 CLAUDE_PROJECTS_DIR = Path.home() / '.claude' / 'projects'
 
 
+def normalize_reset_time(reset_time_str: str) -> str:
+    """
+    Normalize reset time to the top of the hour (:00).
+    
+    The Claude API sometimes returns :59 or :00 for the same hour boundary,
+    causing jitter in reset times. This function rounds to :00 for consistency.
+    
+    Args:
+        reset_time_str: ISO format timestamp string (e.g., "2024-11-14T04:00:00.000Z")
+    
+    Returns:
+        Normalized ISO format timestamp string with minutes/seconds set to :00
+    
+    Example:
+        "2024-11-14T03:59:59.999Z" -> "2024-11-14T04:00:00.000Z"
+        "2024-11-14T04:00:00.123Z" -> "2024-11-14T04:00:00.000Z"
+    """
+    # Parse the timestamp
+    dt = datetime.fromisoformat(reset_time_str.replace('Z', '+00:00'))
+    
+    # Round to nearest hour
+    if dt.minute >= 30:
+        # Round up to next hour
+        dt = dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    else:
+        # Round down to current hour
+        dt = dt.replace(minute=0, second=0, microsecond=0)
+    
+    # Return in ISO format with Z suffix
+    return dt.strftime('%Y-%m-%dT%H:%M:%S.%f')[:-3] + 'Z'
+
+
 def get_previous_snapshot(current_snapshot_id: int) -> Optional[Dict]:
     """
     Get the snapshot immediately before the current one.
