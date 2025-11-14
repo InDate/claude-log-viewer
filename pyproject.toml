@@ -44,4 +44,4 @@ claude-log-viewer = "claude_log_viewer.app:main"
 packages = ["claude_log_viewer"]
 
 [tool.setuptools.package-data]
-claude_log_viewer = ["templates/*.html"]
+claude_log_viewer = ["templates/*.html", "static/css/*.css", "static/js/*.js"]

@@ -1,4 +1,5 @@
 include README.md
 include LICENSE
-include requirements.txt
+include INSTALL.md
 recursive-include claude_log_viewer/templates *.html
+recursive-include claude_log_viewer/static *

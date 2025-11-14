@@ -71,12 +71,24 @@ The viewer will automatically load JSONL files from your Claude projects directo
 - Uses Watchdog for file system monitoring
 - Displays up to 500 most recent entries
 - Reads all `.jsonl` files in the Claude projects directory
+- Automatic usage tracking with API polling
+- Git integration for session checkpoints (experimental)
 
+## Planned Features
 
-## New Features
-- Detect Branching and Update Active Sessions to select specific branch
-- Delete sessions from web interface and remove files
-- Resume the session from web interface (resume/continue on CC is confusing)
-- Tools results should be parsed as markdown
-- Load the image paths in the session
-- Rename sessions to friendly names.
+See [docs/rollback-proposal/](docs/rollback-proposal/) for detailed design documentation of upcoming features:
+
+- Full checkpoint selector UI with conversation context
+- Fork detection and navigation
+- Session branching visualization
+- Enhanced session management (delete, rename, resume)
+- Markdown rendering for tool results
+- Image display in sessions
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.

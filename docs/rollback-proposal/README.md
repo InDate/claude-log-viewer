@@ -1,5 +1,11 @@
 # Claude Code Rollback Proposal
 
+> **⚠️ STATUS: PLANNED FEATURE - NOT YET IMPLEMENTED**
+> 
+> This folder contains design documentation for a **planned feature**. The git-based rollback functionality described here is partially implemented (basic checkpoint creation exists) but the full checkpoint selector UI and fork detection workflow are not yet complete.
+>
+> See [CHANGELOG.md](CHANGELOG.md) for implementation status.
+
 This folder contains a comprehensive proposal for implementing reflog-based rollback functionality in claude-log-viewer.
 
 ## Document Overview
