@@ -217,7 +217,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 - **Repository**: https://github.com/InDate/claude-log-viewer
 - **Issues**: https://github.com/InDate/claude-log-viewer/issues
-- **PyPI**: https://pypi.org/project/claude-log-viewer/ (coming soon)
+- **PyPI**: https://pypi.org/project/claude-log-viewer/
+- **Release**: https://github.com/InDate/claude-log-viewer/releases/tag/v1.0.0
 
 ## 📚 Documentation
 
