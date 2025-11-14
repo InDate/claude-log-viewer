@@ -72,6 +72,30 @@
     line-height: 1.6;
 }
 
+/* Modal-specific styles for different use cases */
+
+/* Content modal - needs scrolling for long content (usage history, tool details, etc.) */
+#contentModal .modal-dialog {
+    max-height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
+#contentModal .modal-body {
+    overflow-y: auto;
+    flex: 1;
+}
+
+/* Settings modal - dynamic expansion for collapsible sections */
+#settingsModal .modal-dialog {
+    max-height: 90vh;
+    overflow-y: auto;
+}
+
+#settingsModal .modal-body {
+    overflow-y: visible;
+}
+
 /* Plan navigation controls */
 .plan-navigation {
     display: flex;

@@ -350,49 +350,47 @@ function createEntryRow(entry) {
         const fiveHourClass = getUsageClass(snapshot.five_hour_pct || 0);
         const sevenDayClass = getUsageClass(snapshot.seven_day_pct || 0);
 
+        // Check which windows have deltas (actually changed)
+        const hasFiveHourDelta = (snapshot.five_hour_tokens_consumed !== null && snapshot.five_hour_tokens_consumed !== undefined);
+        const hasSevenDayDelta = (snapshot.seven_day_tokens_consumed !== null && snapshot.seven_day_tokens_consumed !== undefined);
+
         // Format tokens and messages for display with "total (+delta)" format
         const formatStat = (totalTokens, totalMessages, deltaTokens, deltaMessages) => {
             if (totalTokens === null || totalTokens === undefined) return '—';
-            // Handle null deltas by displaying 0
-            const deltaTokensValue = (deltaTokens === null || deltaTokens === undefined) ? 0 : deltaTokens;
-            const deltaMessagesValue = (deltaMessages === null || deltaMessages === undefined) ? 0 : deltaMessages;
-            const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokensValue)})`;
-            const messagesStr = `${totalMessages} (+${deltaMessagesValue})`;
-            return `${tokensStr} tokens | ${messagesStr}`;
+            const tokensStr = `${formatNumber(totalTokens)} (+${formatNumber(deltaTokens)})`;
+            const messagesStr = `${totalMessages} (+${deltaMessages})`;
+            return `${tokensStr} tokens | ${messagesStr} msgs`;
         };
 
-        const fiveHourStats = formatStat(
-            snapshot.five_hour_tokens_total,
-            snapshot.five_hour_messages_total,
-            snapshot.five_hour_tokens_consumed,
-            snapshot.five_hour_messages_count
-        );
-        const sevenDayStats = formatStat(
-            snapshot.seven_day_tokens_total,
-            snapshot.seven_day_messages_total,
-            snapshot.seven_day_tokens_consumed,
-            snapshot.seven_day_messages_count
-        );
+        // Build stats HTML only for windows that changed - compact format
+        let statsHTML = '';
+
+        if (hasFiveHourDelta) {
+            statsHTML += `
+                <div class="usage-window">
+                    <span class="window-label">5H</span>
+                    <span class="window-percent usage-value ${fiveHourClass}">${fiveHourPct}%</span>
+                    <span class="window-stats">Tokens: ${formatNumber(snapshot.five_hour_tokens_total)} <span class="stat-delta">(+${formatNumber(snapshot.five_hour_tokens_consumed)})</span> | Messages: ${snapshot.five_hour_messages_total} <span class="stat-delta">(+${snapshot.five_hour_messages_count})</span></span>
+                </div>
+            `;
+        }
+
+        if (hasSevenDayDelta) {
+            statsHTML += `
+                <div class="usage-window">
+                    <span class="window-label">7D</span>
+                    <span class="window-percent usage-value ${sevenDayClass}">${sevenDayPct}%</span>
+                    <span class="window-stats">Tokens: ${formatNumber(snapshot.seven_day_tokens_total)} <span class="stat-delta">(+${formatNumber(snapshot.seven_day_tokens_consumed)})</span> | Messages: ${snapshot.seven_day_messages_total} <span class="stat-delta">(+${snapshot.seven_day_messages_count})</span></span>
+                </div>
+            `;
+        }
 
         td.innerHTML = `
             <div class="usage-increment-container">
-                <div class="usage-increment-icon">📊</div>
-                <div class="usage-increment-content">
-                    <div class="usage-increment-title">Usage Increment Detected</div>
-                    <div class="usage-increment-details">
-                        <div class="usage-increment-stat">
-                            <span class="usage-increment-label">5-Hour Window:</span>
-                            <span class="usage-increment-value usage-value ${fiveHourClass}">${fiveHourPct}% utilization</span>
-                            <span class="usage-increment-meta">${fiveHourStats}</span>
-                        </div>
-                        <div class="usage-increment-stat">
-                            <span class="usage-increment-label">7-Day Window:</span>
-                            <span class="usage-increment-value usage-value ${sevenDayClass}">${sevenDayPct}% utilization</span>
-                            <span class="usage-increment-meta">${sevenDayStats}</span>
-                        </div>
-                    </div>
-                </div>
-                <div class="usage-increment-time">${formatTimestamp(entry.timestamp)}</div>
+                <span class="usage-increment-icon">📊</span>
+                <span class="usage-increment-title">Usage Increment</span>
+                <span class="usage-increment-time">(${formatTimestamp(entry.timestamp)})</span>
+                ${statsHTML}
             </div>
         `;
 

@@ -3,10 +3,12 @@
 import { formatTimeRemaining, getUsageClass, formatNumber, formatRelativeTime } from './utils.js';
 import { setUsageRefreshInterval } from './state.js';
 
-// Fetch and render usage data
+// Fetch and render usage data from backend (pre-calculated)
 export async function loadUsageData() {
     try {
-        const response = await fetch('/api/usage');
+        // Use new backend endpoint that returns pre-calculated usage data
+        // Backend API poller handles Claude API calls and calculations automatically
+        const response = await fetch('/api/usage/latest');
         const data = await response.json();
 
         if (data.error) {
@@ -14,7 +16,25 @@ export async function loadUsageData() {
             return;
         }
 
-        renderUsageData(data);
+        if (!data.snapshot) {
+            // No snapshots available yet (backend still starting up)
+            renderUsageError(data.message || 'Waiting for first usage snapshot...');
+            return;
+        }
+
+        // Transform backend snapshot format to frontend format
+        const frontendData = {
+            five_hour: {
+                utilization: data.snapshot.five_hour.pct,
+                resets_at: data.snapshot.five_hour.reset
+            },
+            seven_day: {
+                utilization: data.snapshot.seven_day.pct,
+                resets_at: data.snapshot.seven_day.reset
+            }
+        };
+
+        renderUsageData(frontendData);
     } catch (error) {
         console.error('Error loading usage data:', error);
         renderUsageError(error.message);

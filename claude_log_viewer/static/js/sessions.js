@@ -228,6 +228,10 @@ export function renderSessionSummary() {
                         <div class="label">Timeline</div>
                     </div>
                     ` : ''}
+                    <div class="session-icon-btn" data-action="checkpoint" title="Create checkpoint">
+                        <div class="icon">💾</div>
+                        <div class="label">Save</div>
+                    </div>
                 </div>
                 <div class="session-id">
                     <span class="session-color-badge" style="background: ${color}; color: #fff;">
@@ -304,6 +308,9 @@ export function renderSessionSummary() {
 
                         // Render timeline view
                         import('./entries.js').then(module => module.renderEntries());
+                    } else if (action === 'checkpoint') {
+                        // Create checkpoint for this session
+                        createCheckpoint(session.id, btn);
                     }
                 });
             });
@@ -378,4 +385,78 @@ export function updateStats() {
     }
 
     stats.textContent = `Showing ${filtered.length} of ${allEntries.length} entries`;
+}
+
+// Create checkpoint for a session
+async function createCheckpoint(sessionId, buttonElement) {
+    const originalIcon = buttonElement.querySelector('.icon').textContent;
+    const originalLabel = buttonElement.querySelector('.label').textContent;
+
+    try {
+        // Show loading state
+        buttonElement.querySelector('.icon').textContent = '⏳';
+        buttonElement.querySelector('.label').textContent = 'Saving...';
+        buttonElement.disabled = true;
+
+        // Call API to create checkpoint
+        const response = await fetch(`/api/sessions/${sessionId}/checkpoint`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                description: `Manual checkpoint at ${new Date().toISOString()}`
+            })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            // Show success state briefly
+            buttonElement.querySelector('.icon').textContent = '✓';
+            buttonElement.querySelector('.label').textContent = 'Saved!';
+
+            // Log success
+            console.log('Checkpoint created:', result);
+
+            // Show user-friendly notification
+            if (result.commit_hash) {
+                const shortHash = result.commit_hash.substring(0, 8);
+                console.log(`✓ Checkpoint created: ${shortHash} (id: ${result.checkpoint_id})`);
+            }
+
+            // Reset button after 2 seconds
+            setTimeout(() => {
+                buttonElement.querySelector('.icon').textContent = originalIcon;
+                buttonElement.querySelector('.label').textContent = originalLabel;
+                buttonElement.disabled = false;
+            }, 2000);
+        } else {
+            // Show error
+            buttonElement.querySelector('.icon').textContent = '❌';
+            buttonElement.querySelector('.label').textContent = 'Error';
+
+            console.error('Failed to create checkpoint:', result.error);
+
+            // Reset button after 3 seconds
+            setTimeout(() => {
+                buttonElement.querySelector('.icon').textContent = originalIcon;
+                buttonElement.querySelector('.label').textContent = originalLabel;
+                buttonElement.disabled = false;
+            }, 3000);
+        }
+    } catch (error) {
+        console.error('Error creating checkpoint:', error);
+
+        // Show error state
+        buttonElement.querySelector('.icon').textContent = '❌';
+        buttonElement.querySelector('.label').textContent = 'Error';
+
+        // Reset button after 3 seconds
+        setTimeout(() => {
+            buttonElement.querySelector('.icon').textContent = originalIcon;
+            buttonElement.querySelector('.label').textContent = originalLabel;
+            buttonElement.disabled = false;
+        }, 3000);
+    }
 }

@@ -68,7 +68,7 @@
     border-radius: 3px;
 }
 
-/* Usage increment row styles */
+/* Usage increment row styles - Modern compact design */
 .usage-increment-row {
     background: linear-gradient(90deg, #1e1e1e 0%, #2a2a3a 50%, #1e1e1e 100%);
 }
@@ -86,65 +86,64 @@
 .usage-increment-container {
     display: flex;
     align-items: center;
-    padding: 15px 20px;
-    gap: 20px;
+    gap: 15px;
+    padding: 12px 20px;
 }
 
 .usage-increment-icon {
-    font-size: 32px;
+    font-size: 18px;
     line-height: 1;
     flex-shrink: 0;
 }
 
-.usage-increment-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
 .usage-increment-title {
-    font-size: 14px;
+    font-size: 11px;
     font-weight: 600;
     color: #4fc1ff;
     text-transform: uppercase;
     letter-spacing: 0.5px;
-}
-
-.usage-increment-details {
-    display: flex;
-    gap: 30px;
-    flex-wrap: wrap;
-}
-
-.usage-increment-stat {
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-}
-
-.usage-increment-label {
-    font-size: 12px;
-    color: #9d9d9d;
-    font-weight: 500;
-}
-
-.usage-increment-value {
-    font-size: 13px;
-    font-weight: 600;
-    padding: 4px 8px;
-    border-radius: 3px;
-}
-
-.usage-increment-meta {
-    font-size: 11px;
-    color: #8d8d8d;
-    font-family: 'Consolas', 'Monaco', monospace;
+    flex-shrink: 0;
 }
 
 .usage-increment-time {
-    font-size: 11px;
+    font-size: 10px;
     color: #7d7d7d;
-    white-space: nowrap;
     flex-shrink: 0;
+    min-width: 60px;
+}
+
+.usage-window {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: rgba(0, 122, 204, 0.05);
+    border: 1px solid rgba(0, 122, 204, 0.2);
+    border-radius: 4px;
+    padding: 8px 12px;
+}
+
+.window-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: #9d9d9d;
+    text-transform: uppercase;
+}
+
+.window-percent {
+    font-size: 13px;
+    font-weight: 600;
+    padding: 2px 8px;
+    border-radius: 3px;
+}
+
+.window-stats {
+    font-size: 11px;
+    color: #d4d4d4;
+    font-family: 'Consolas', 'Monaco', monospace;
+    flex: 1;
+}
+
+.stat-delta {
+    color: #4fc1ff;
+    font-weight: 600;
 }
