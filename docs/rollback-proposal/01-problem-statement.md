@@ -25,7 +25,15 @@ Claude Code provides a built-in checkpoint/rewind feature, but it has significan
    - Agent operations may use Bash (which isn't tracked)
    - No granular rollback per-agent
 
-4. **Not a Version Control System**
+4. **Conversation Forking Not Tracked**
+   - When users fork conversations (ESC ESC → restore), file state diverges across branches
+   - No automatic checkpoints created at fork points
+   - Git state not captured per conversation branch
+   - Cannot rollback to specific fork points
+   - Impossible to compare changes across different fork branches
+   - Lost context when switching between conversation forks
+
+5. **Not a Version Control System**
    - Checkpoints are explicitly "local undo, not permanent version control"
    - Recommended to use Git alongside checkpoints
    - Checkpoints don't persist across sessions reliably
@@ -67,6 +75,29 @@ Time 5: User tries to rewind
 Result: ❌ Manual changes and build outputs are lost
 ```
 
+**Scenario 4: Conversation Fork Rollback**
+```
+Time 0: Claude session starts on main branch
+Time 1: Claude makes 5 commits (modifying api.py, models.py, config.json)
+Time 2: User forks conversation (ESC ESC → restore to earlier point)
+        ✓ Checkpoint automatically created at fork point (git commit recorded)
+Time 3: Fork A continues, makes 3 more commits (modifying database.py)
+Time 4: User forks again, creating Fork B with different direction
+        ✓ Another checkpoint created at this fork point
+Time 5: Fork B makes 4 commits (modifying api.py differently than Fork A)
+Time 6: User realizes Fork B approach is wrong, wants to rollback to fork point
+
+Result: ✓ User views fork tree visualization with last 30 messages context
+        ✓ User selects Fork B's fork point in checkpoint selector UI
+        ✓ Three restore actions available:
+           - Preview changes (view diff before commit)
+           - Rollback to fork point (non-destructive, commits go to reflog)
+           - View conversation messages at that point (last 30)
+        ✓ User rolls back to fork point commit
+        ✓ Can compare Fork A vs Fork B changes in UI
+        ✓ All rollback actions are reversible via reflog
+```
+
 ## User Requirements
 
 Based on discussion and analysis, the solution must satisfy:
@@ -91,20 +122,28 @@ Based on discussion and analysis, the solution must satisfy:
    - Recovery window must be reasonable (weeks/months, not hours/days)
    - Partial recovery should be possible (cherry-pick specific changes)
 
+4. **Fork-Aware Rollback**
+   - Automatic checkpoints when conversations fork
+   - Track git commit hash at each fork point
+   - Visualize conversation tree with git state per branch
+   - Enable rollback to fork point, not just session start
+   - Compare file changes across conversation branches
+   - Preserve fork relationships in database for navigation
+
 ### Secondary Requirements
 
-4. **Agent Granularity**
+5. **Agent Granularity**
    - Track which changes came from which agent
    - Option to rollback specific agent's work
    - Option to keep agent changes while rolling back main session
 
-5. **Ease of Use**
+6. **Ease of Use**
    - Visual UI for rollback (not just CLI)
    - Preview changes before rollback
    - Clear status indicators
    - Undo/redo capability
 
-6. **No Manual Git Management**
+7. **No Manual Git Management**
    - Automation should handle git operations
    - Users shouldn't need to remember branch names
    - Cleanup should be automatic
@@ -260,10 +299,14 @@ A solution that:
 1. ✅ Works in single directory (no worktrees)
 2. ✅ Keeps git history clean (no branch pollution)
 3. ✅ Provides reliable rollback (handles Edit/Write/Bash)
-4. ✅ Tracks agent changes separately
-5. ✅ Offers recovery window (weeks/months)
-6. ✅ Enables partial recovery (cherry-pick)
-7. ✅ Automates complexity (users don't manage branches/refs)
+4. ✅ Detects conversation forks automatically
+5. ✅ Creates checkpoints at fork points
+6. ✅ Tracks git state per conversation branch
+7. ✅ Enables fork visualization and comparison
+8. ✅ Tracks agent changes separately
+9. ✅ Offers recovery window (weeks/months)
+10. ✅ Enables partial recovery (cherry-pick)
+11. ✅ Automates complexity (users don't manage branches/refs)
 
 The solution must balance these constraints without requiring users to become git experts or maintain complex infrastructure.
 
@@ -299,4 +342,21 @@ The solution will be considered successful if:
    - Can rollback specific agent's work
    - Can keep agent changes while rolling back main session
 
+6. **Conversation forks are tracked**:
+   - Fork events detected automatically via JSONL monitoring
+   - Checkpoints created automatically at fork points (no user action required)
+   - At least 95% of fork events detected and checkpointed
+   - Checkpoint selector UI shows last 30 messages for context
+   - Bounded navigation controls ([←] [→]) for browsing checkpoints
+   - Three restore actions: Preview changes, Rollback (non-destructive), View messages
+   - All rollback actions reversible via reflog (180-day window)
+   - Can compare changes between different fork branches
+   - Fork relationships preserved in database for UI navigation
+
 This problem statement sets the foundation for evaluating potential solutions against clear, measurable criteria.
+
+---
+
+**See also:**
+- [FORK_DETECTION_SUMMARY.md](../../claude_log_viewer/analysis/FORK_DETECTION_SUMMARY.md) - Existing fork detection implementation
+- [02-research-findings.md](02-research-findings.md) - Research into fork detection patterns

@@ -472,6 +472,203 @@ class ReflogManager:
 
 **Rationale:** Isolates git reflog complexity, makes testing easier, allows for future reflog format changes
 
+### 4.5 Fork Manager (New Component)
+
+**Responsibility:** Detect conversation forks and create automatic checkpoints
+
+**Design Context:** Based on [02-research-findings.md] Finding 9 and [01-problem-statement.md] Requirement 4 (Fork-Aware Rollback)
+
+**Interface:**
+
+```python
+class ForkManager:
+    def __init__(self, git_manager: GitManager, database: Database):
+        """
+        Initialize with GitManager and Database instances.
+        Integrates with JSONL processor for fork detection.
+        """
+
+    def on_fork_detected(
+        self,
+        parent_uuid: str,
+        child_uuid: str
+    ) -> Dict[str, any]:
+        """
+        Called when JSONL processor detects conversation fork.
+
+        Process:
+        1. Get current HEAD (this is the fork point)
+        2. Create checkpoint with type='fork_point'
+        3. Record fork relationship in database
+        4. Update child session metadata (fork_parent_uuid, current_commit)
+        5. Record message_uuid for checkpoint context (last 30 messages)
+        6. Return fork checkpoint info
+
+        Returns:
+        {
+            'fork_point_commit': str,  # Git hash at fork
+            'parent_uuid': str,
+            'child_uuid': str,
+            'checkpoint_id': str,
+            'message_uuid': str,  # For conversation context
+            'created_at': datetime
+        }
+
+        Called by: JSONL processor when detecting new session with parent_uuid
+        """
+
+    def get_fork_tree(
+        self,
+        root_uuid: str,
+        include_commits: bool = False
+    ) -> Dict[str, any]:
+        """
+        Build fork tree from database relationships.
+
+        Returns nested structure:
+        {
+            'session_uuid': str,
+            'fork_point_commit': Optional[str],
+            'current_commit': str,
+            'created_at': datetime,
+            'commits_ahead': int,  # Commits since fork point
+            'children': List[Dict],  # Recursive fork tree
+            'commits': Optional[List[Dict]]  # If include_commits=True
+        }
+
+        Used for: UI fork tree visualization
+        """
+
+    def get_fork_point(self, fork_uuid: str) -> Optional[Dict]:
+        """
+        Get fork point information for a forked session.
+
+        Returns:
+        {
+            'fork_point_commit': str,
+            'parent_uuid': str,
+            'created_at': datetime,
+            'checkpoint_id': str,
+            'message_uuid': str  # For conversation context
+        }
+
+        Returns None if not a forked session.
+        Used for: "Rollback to fork point" operation
+        """
+
+    def get_checkpoints_with_context(
+        self,
+        session_uuid: str,
+        limit: int = 50
+    ) -> List[Dict]:
+        """
+        Get all checkpoints for session with message context.
+        Returns bounded list for UI navigation.
+
+        Returns:
+        [
+            {
+                'checkpoint_id': str,
+                'checkpoint_commit': str,
+                'message_uuid': str,
+                'message_timestamp': datetime,
+                'message_preview': str,  # First 100 chars
+                'created_at': datetime,
+                'checkpoint_type': str  # 'manual' | 'fork_point' | 'auto'
+            }
+        ]
+
+        Used for: Checkpoint selector UI with bounded navigation
+        """
+
+    def get_checkpoint_messages(
+        self,
+        checkpoint_id: str,
+        before: int = 30,
+        after: int = 0
+    ) -> List[Dict]:
+        """
+        Get conversation messages around checkpoint for context.
+        Default: last 30 messages before checkpoint.
+
+        Returns:
+        [
+            {
+                'message_uuid': str,
+                'content': str,
+                'role': str,  # 'user' | 'assistant'
+                'timestamp': datetime,
+                'is_checkpoint': bool  # True for checkpoint message
+            }
+        ]
+
+        Used for: Showing conversation context in checkpoint selector
+        """
+
+    def compare_fork_branches(
+        self,
+        fork_a_uuid: str,
+        fork_b_uuid: str
+    ) -> Dict[str, any]:
+        """
+        Compare changes between two fork branches.
+
+        Process:
+        1. Find common ancestor (fork point)
+        2. Get commits from ancestor to each fork
+        3. Compute diffs for each branch
+        4. Return comparison data
+
+        Returns:
+        {
+            'common_ancestor': str,
+            'fork_a': {
+                'commits': List[Dict],
+                'diff': str,
+                'files_changed': List[str]
+            },
+            'fork_b': {
+                'commits': List[Dict],
+                'diff': str,
+                'files_changed': List[str]
+            }
+        }
+
+        Used for: UI fork comparison modal
+        """
+```
+
+**Integration Points:**
+
+1. **JSONL Processor Hook**
+   ```python
+   # jsonl_processor.py
+   def process_session_entry(entry: dict):
+       if entry.get('parent_session_uuid'):
+           fork_manager.on_fork_detected(
+               parent_uuid=entry['parent_session_uuid'],
+               child_uuid=entry['uuid']
+           )
+   ```
+
+2. **Database Integration**
+   - Reads/writes conversation_forks table
+   - Updates sessions table (fork_parent_uuid, current_commit)
+   - Queries git_checkpoints for fork point info
+
+3. **Git Manager Integration**
+   - Uses git_manager.create_checkpoint() for fork points
+   - Uses git_manager.get_commit_diff() for comparisons
+   - Uses git reflog for commit history analysis
+
+**Design Decision:** Automatic checkpoint creation on fork detection
+
+**Rationale:**
+- User doesn't need to remember to checkpoint before forking
+- 95%+ fork detection rate (proven in existing implementation)
+- ~115ms overhead per fork (acceptable)
+- Addresses [01-problem-statement.md] Scenario 4 (missing fork checkpoints)
+
 ## 5. Data Model
 
 ### 5.1 Git Checkpoints Table
@@ -485,12 +682,14 @@ CREATE TABLE IF NOT EXISTS git_checkpoints (
     checkpoint_commit TEXT NOT NULL,      -- Git commit hash at checkpoint
     checkpoint_reflog TEXT NOT NULL,      -- Reflog ref (HEAD@{n})
     checkpoint_branch TEXT,               -- Branch name at checkpoint
+    message_uuid TEXT,                    -- JSONL message UUID for context
 
     -- Metadata
     created_at TIMESTAMP NOT NULL,
     status TEXT NOT NULL CHECK(
         status IN ('active', 'kept', 'rolled_back')
     ),
+    checkpoint_type TEXT DEFAULT 'manual', -- 'manual' | 'fork_point' | 'auto'
 
     -- Recovery options
     recovery_tag TEXT,                    -- Git tag for permanent preservation
@@ -570,66 +769,156 @@ CREATE INDEX idx_git_commits_tool
 - **in_reflog flag**: Track whether commit still accessible (for UI indication)
 - **Foreign key to tool_results**: Bi-directional navigation
 
-### 5.3 Data Relationships
+### 5.3 Conversation Forks Table
+
+**Design Context:** Based on [02-research-findings.md] Finding 9 - Fork detection and tracking
+
+```sql
+CREATE TABLE IF NOT EXISTS conversation_forks (
+    -- Fork relationship
+    parent_uuid TEXT NOT NULL,
+    child_uuid TEXT NOT NULL,
+
+    -- Fork point information
+    fork_point_commit TEXT NOT NULL,      -- Git hash at fork time
+    fork_checkpoint_id TEXT,              -- Link to checkpoint
+    message_uuid TEXT,                    -- JSONL message UUID for context
+
+    -- Metadata
+    created_at TIMESTAMP NOT NULL,
+
+    -- Primary key
+    PRIMARY KEY (parent_uuid, child_uuid),
+
+    -- Foreign keys
+    FOREIGN KEY (parent_uuid) REFERENCES sessions(uuid)
+        ON DELETE CASCADE,
+    FOREIGN KEY (child_uuid) REFERENCES sessions(uuid)
+        ON DELETE CASCADE,
+    FOREIGN KEY (fork_checkpoint_id) REFERENCES git_checkpoints(session_uuid)
+        ON DELETE SET NULL
+);
+
+-- Performance indexes
+CREATE INDEX idx_conversation_forks_parent
+    ON conversation_forks(parent_uuid);
+
+CREATE INDEX idx_conversation_forks_child
+    ON conversation_forks(child_uuid);
+
+CREATE INDEX idx_conversation_forks_commit
+    ON conversation_forks(fork_point_commit);
+```
+
+**Schema Extension: Sessions Table**
+
+```sql
+-- Extend existing sessions table
+ALTER TABLE sessions ADD COLUMN fork_parent_uuid TEXT;
+ALTER TABLE sessions ADD COLUMN current_commit TEXT;
+
+-- Add foreign key constraint
+ALTER TABLE sessions ADD CONSTRAINT fk_fork_parent
+    FOREIGN KEY (fork_parent_uuid) REFERENCES sessions(uuid)
+    ON DELETE SET NULL;
+
+-- Add index for fork queries
+CREATE INDEX idx_sessions_fork_parent
+    ON sessions(fork_parent_uuid);
+```
+
+**Design Rationale:**
+
+- **Composite PK (parent_uuid, child_uuid)**: One fork relationship per parent-child pair
+- **fork_point_commit**: Git hash at exact moment of fork (enables rollback to fork point)
+- **fork_checkpoint_id**: Links to checkpoint table for additional metadata
+- **CASCADE deletes**: If session deleted, remove fork relationships
+- **current_commit in sessions**: Track git state per conversation branch
+- **fork_parent_uuid in sessions**: Quick lookup of parent session
+
+### 5.4 Data Relationships
 
 ```
-sessions (existing)
+sessions (existing/extended)
     ↓ 1:1
 git_checkpoints (new)
     ↓ 1:many
 git_commits (new)
     ↓ many:1
 tool_results (existing)
+
+sessions (extended)
+    ↓ 1:many (parent → children)
+conversation_forks (new)
+    ↓ many:1 (children → parent)
+sessions (extended)
 ```
 
 **Entity Relationship Diagram (ASCII):**
 
 ```
-┌─────────────────┐
-│    sessions     │
-│  (existing)     │
-│─────────────────│
-│ uuid [PK]       │
-│ start_time      │
-│ end_time        │
-│ ...             │
-└────────┬────────┘
-         │ 1:1
+┌──────────────────┐
+│    sessions      │
+│  (extended)      │
+│──────────────────│
+│ uuid [PK]        │◄──────────┐
+│ fork_parent_uuid │───┐       │ (parent → children)
+│ current_commit   │   │       │
+│ start_time       │   │       │
+│ ...              │   │       │
+└────────┬─────────┘   │       │
+         │ 1:1         │       │
+         ▼             │       │
+┌──────────────────┐   │       │
+│ git_checkpoints  │   │       │
+│     (new)        │   │       │
+│──────────────────│   │       │
+│ session_uuid [PK]│──┐│       │
+│ checkpoint_...   │  ││       │
+│ status           │  ││       │
+│ recovery_...     │  ││       │
+└──────────────────┘  ││       │
+         │ 1:many     ││       │
+         ▼            ││       │
+┌──────────────────┐  ││       │
+│  git_commits     │  ││       │
+│     (new)        │  ││       │
+│──────────────────│  ││       │
+│ commit_hash [PK] │  ││       │
+│ session_uuid     │◄─┘│       │
+│ agent_id         │   │       │
+│ tool_use_id      │──┐│       │
+│ message          │  ││       │
+│ ...              │  ││       │
+└──────────────────┘  ││       │
+                      ││       │
+         ┌────────────┘│       │
+         ▼             │       │
+┌──────────────────┐   │       │
+│  tool_results    │   │       │
+│   (existing)     │   │       │
+│──────────────────│   │       │
+│ tool_use_id [PK] │   │       │
+│ tool_name        │   │       │
+│ input            │   │       │
+│ output           │   │       │
+└──────────────────┘   │       │
+                       │       │
+         ┌─────────────┘       │
+         ▼                     │
+┌───────────────────┐          │
+│ conversation_forks│          │
+│      (new)        │          │
+│───────────────────│          │
+│ parent_uuid [PK]  │──────────┘
+│ child_uuid [PK]   │──────────┐
+│ fork_point_commit │          │
+│ created_at        │          │
+└───────────────────┘          │
+                               │
+         ┌─────────────────────┘
          ▼
-┌─────────────────┐
-│ git_checkpoints │
-│     (new)       │
-│─────────────────│
-│ session_uuid[PK]│──┐
-│ checkpoint_...  │  │ FK
-│ status          │  │
-│ recovery_...    │  │
-└─────────────────┘  │
-         │ 1:many    │
-         ▼           │
-┌─────────────────┐  │
-│  git_commits    │  │
-│     (new)       │  │
-│─────────────────│  │
-│ commit_hash [PK]│  │
-│ session_uuid    │◄─┘
-│ agent_id        │
-│ tool_use_id     │──┐
-│ message         │  │ FK
-│ ...             │  │
-└─────────────────┘  │
-                     │
-         ┌───────────┘
-         ▼
-┌─────────────────┐
-│  tool_results   │
-│   (existing)    │
-│─────────────────│
-│ tool_use_id [PK]│
-│ tool_name       │
-│ input           │
-│ output          │
-└─────────────────┘
+      (back to sessions)
 ```
 
 ### 5.4 Database Migration Strategy
@@ -926,6 +1215,93 @@ Response: 200 OK
 }
 ```
 
+### 6.6 Checkpoint Selector Endpoints
+
+**Get Checkpoints with Context**
+```
+GET /api/sessions/{session_id}/checkpoints
+    ?limit=50
+
+Response: 200 OK
+{
+    "checkpoints": [
+        {
+            "checkpoint_id": "ckpt-abc123",
+            "checkpoint_commit": "git789def",
+            "message_uuid": "msg-xyz456",
+            "message_timestamp": "2025-11-11T10:30:00Z",
+            "message_preview": "Let's try a different approach...",
+            "created_at": "2025-11-11T10:30:05Z",
+            "checkpoint_type": "fork_point"
+        },
+        ...
+    ],
+    "total": 15,
+    "has_more": false
+}
+```
+
+**Get Checkpoint Messages (Last 30)**
+```
+GET /api/checkpoints/{checkpoint_id}/messages
+    ?before=30
+    &after=0
+
+Response: 200 OK
+{
+    "checkpoint": {
+        "checkpoint_id": "ckpt-abc123",
+        "checkpoint_commit": "git789def",
+        "message_uuid": "msg-xyz456",
+        "created_at": "2025-11-11T10:30:05Z"
+    },
+    "messages": [
+        {
+            "message_uuid": "msg-xyz400",
+            "content": "Can you help me refactor this?",
+            "role": "user",
+            "timestamp": "2025-11-11T10:25:00Z",
+            "is_checkpoint": false
+        },
+        {
+            "message_uuid": "msg-xyz456",
+            "content": "Let's try a different approach...",
+            "role": "assistant",
+            "timestamp": "2025-11-11T10:30:00Z",
+            "is_checkpoint": true
+        },
+        ...
+    ],
+    "total_messages": 30
+}
+```
+
+**Preview Checkpoint Diff**
+```
+GET /api/checkpoints/{checkpoint_id}/preview
+
+Response: 200 OK
+{
+    "checkpoint_commit": "git789def",
+    "current_commit": "gitabc123",
+    "commits_between": 5,
+    "diff": "diff --git a/file.py ...",
+    "stats": {
+        "files_changed": 3,
+        "insertions": 45,
+        "deletions": 12
+    },
+    "files": [
+        {
+            "path": "file.py",
+            "status": "modified",
+            "insertions": 30,
+            "deletions": 8
+        }
+    ]
+}
+```
+
 ## 7. UI/UX Design
 
 ### 7.1 UI Components
@@ -945,6 +1321,7 @@ Response: 200 OK
 │ │  📊 10 files changed (+150 -45 lines)             │  │
 │ │                                                     │  │
 │ │  [View Commits]  [View Diff]  [🔴 Rollback]       │  │
+│ │  [Select Checkpoint]                                │  │
 │ └─────────────────────────────────────────────────────┘  │
 │                                                           │
 │ ┌─────────────────────────────────────────────────────┐  │
@@ -967,6 +1344,52 @@ Response: 200 OK
 │ └─────────────────────────────────────────────────────┘  │
 │                                                           │
 │ [Existing session details continue below...]             │
+└───────────────────────────────────────────────────────────┘
+```
+
+**Checkpoint Selector UI (Non-Destructive by Default)**
+
+```
+┌───────────────────────────────────────────────────────────┐
+│ Select Checkpoint to Restore                          [×] │
+├───────────────────────────────────────────────────────────┤
+│                                                           │
+│ Browse checkpoints: [←] Checkpoint 3 of 8 [→]           │
+│                                                           │
+│ ┌─────────────────────────────────────────────────────┐  │
+│ │  Fork Point • 10:30 AM • Nov 11, 2025              │  │
+│ │  Commit: git789def                                  │  │
+│ │                                                     │  │
+│ │  Last 30 messages:                                 │  │
+│ │  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━│  │
+│ │                                                     │  │
+│ │  User: Can you refactor the API layer?            │  │
+│ │  10:20 AM                                          │  │
+│ │                                                     │  │
+│ │  Assistant: I'll refactor it using...             │  │
+│ │  10:22 AM                                          │  │
+│ │                                                     │  │
+│ │  User: Actually, let's try a different approach   │  │
+│ │  10:25 AM                                          │  │
+│ │                                                     │  │
+│ │  Assistant: Let's try this instead...             │  │
+│ │  10:30 AM ← CHECKPOINT                             │  │
+│ │                                                     │  │
+│ │  [Show all 30 messages...]                         │  │
+│ └─────────────────────────────────────────────────────┘  │
+│                                                           │
+│ Three Restore Actions (reversible via reflog):           │
+│                                                           │
+│ 1. [Preview Changes]                                     │
+│    View diff without making any changes                  │
+│                                                           │
+│ 2. [Rollback to Checkpoint] (non-destructive)            │
+│    Reset to this point. Changes go to reflog (180 days) │
+│                                                           │
+│ 3. [View Messages Only]                                  │
+│    Read conversation context without rollback            │
+│                                                           │
+│ [Close]                                                   │
 └───────────────────────────────────────────────────────────┘
 ```
 

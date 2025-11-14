@@ -16,6 +16,7 @@ Each strategy is scored (1-10, 10 = best) on:
 6. **Recovery Window** - How long can you recover?
 7. **Agent Granularity** - Can track per-agent changes?
 8. **Industry Adoption** - Proven in the wild?
+9. **Fork Awareness** - Can detect and checkpoint conversation forks? (See [01-problem-statement.md] Requirement 4 and [02-research-findings.md] Finding 9)
 
 ## Option 1: Git Worktrees + Ephemeral Branches
 
@@ -241,6 +242,8 @@ git cherry-pick <commit-hash-from-reflog>
 - ✅ **No Branch Management**: Work directly on current branch
 - ✅ **Atomic Operations**: Reset is instant and atomic
 - ✅ **Configurable Safety**: Extend reflog retention to 180+ days
+- ✅ **Fork-Aware**: Automatic checkpoints on fork creation (see [02-research-findings.md] Finding 9)
+- ✅ **Fork Visualization**: Track git state per conversation branch, compare across forks
 
 ### Cons
 
@@ -276,7 +279,8 @@ git push origin HEAD:refs/recovery/session-{id}
 | Recovery Window | 7/10 | 90-180 days (configurable) |
 | Agent Granularity | 9/10 | Commit messages track agents |
 | Industry Adoption | 6/10 | Emerging pattern |
-| **TOTAL** | **77/80** | |
+| Fork Awareness | 10/10 | Auto-checkpoint on forks, fork tree visualization |
+| **TOTAL** | **87/90** | |
 
 ### Verdict
 
@@ -576,16 +580,16 @@ An agent tasked with critically analyzing this approach identified 10+ fatal fla
 
 ### Scoring Matrix
 
-| Strategy | Clean | Single Dir | Reliable | Complexity | UX | Recovery | Agents | Adoption | **TOTAL** |
-|----------|-------|------------|----------|------------|-----|----------|--------|----------|-----------|
-| **Reflog-Based** | 10 | 10 | 10 | 7 | 8 | 7 | 9 | 6 | **77** ⭐ |
-| Ephemeral Branches | 8 | 10 | 10 | 8 | 7 | 9 | 7 | 10 | **69** |
-| Worktrees | 10 | 1 | 10 | 6 | 5 | 10 | 8 | 9 | **59** |
-| JSONL Reversal | 10 | 10 | 1 | 6 | 3 | 10 | 8 | 1 | **49** |
-| Detached HEAD | 10 | 10 | 5 | 4 | 2 | 6 | 5 | 2 | **44** |
-| Git Notes | 9 | 10 | 3 | 3 | 2 | 7 | 7 | 2 | **43** |
-| APFS Snapshots | 10 | 10 | 9 | 2 | 2 | 8 | 1 | 1 | **43** |
-| Git Stash | 8 | 10 | 3 | 7 | 4 | 4 | 2 | 3 | **41** |
+| Strategy | Clean | Single Dir | Reliable | Complexity | UX | Recovery | Agents | Adoption | Fork Awareness | **TOTAL** |
+|----------|-------|------------|----------|------------|-----|----------|--------|----------|----------------|-----------|
+| **Reflog-Based** | 10 | 10 | 10 | 7 | 8 | 7 | 9 | 6 | 10 | **87** ⭐ |
+| Ephemeral Branches | 8 | 10 | 10 | 8 | 7 | 9 | 7 | 10 | 7 | **76** |
+| Worktrees | 10 | 1 | 10 | 6 | 5 | 10 | 8 | 9 | 8 | **67** |
+| JSONL Reversal | 10 | 10 | 1 | 6 | 3 | 10 | 8 | 1 | 4 | **53** |
+| Detached HEAD | 10 | 10 | 5 | 4 | 2 | 6 | 5 | 2 | 3 | **47** |
+| Git Notes | 9 | 10 | 3 | 3 | 2 | 7 | 7 | 2 | 6 | **49** |
+| APFS Snapshots | 10 | 10 | 9 | 2 | 2 | 8 | 1 | 1 | 9 | **52** |
+| Git Stash | 8 | 10 | 3 | 7 | 4 | 4 | 2 | 3 | 5 | **46** |
 
 ### Decision Matrix by Constraint
 
@@ -605,8 +609,8 @@ An agent tasked with critically analyzing this approach identified 10+ fatal fla
 - ✅ Worktrees (59 points)
 - ❌ JSONL Reversal (49 points - fails this constraint)
 
-**If you must have: All Three**
-- ✅ **Reflog-Based (77 points) - ONLY OPTION**
+**If you must have: All Three + Fork Awareness**
+- ✅ **Reflog-Based (87 points) - ONLY OPTION**
 
 ## Feature Comparison
 
@@ -646,21 +650,26 @@ Based on comprehensive analysis:
 ### Primary Recommendation: Reflog-Based Rollback
 
 **Justification:**
-1. **Highest Score**: 77/80 points
-2. **Meets All Constraints**: Only option that satisfies clean history + single directory + reliable rollback
-3. **Proven Technology**: Built on 15+ years of git reflog reliability
-4. **Configurable Safety**: Can extend retention, create recovery branches
-5. **Simple Mental Model**: Commit → keep or reset → reflog backup
-6. **Handles All Operations**: Git commits capture Edit, Write, and Bash changes
+1. **Highest Score**: 87/90 points
+2. **Meets All Constraints**: Only option that satisfies clean history + single directory + reliable rollback + fork awareness
+3. **Fork-Aware Design**: Automatic checkpoints on conversation forks (see [02-research-findings.md] Finding 9)
+4. **Proven Technology**: Built on 15+ years of git reflog reliability
+5. **Configurable Safety**: Can extend retention, create recovery branches
+6. **Simple Mental Model**: Commit → keep or reset → reflog backup
+7. **Handles All Operations**: Git commits capture Edit, Write, and Bash changes
+8. **Fork Visualization**: Track git state per conversation branch, enable fork tree display
 
 ### Implementation Approach
 
 1. **Auto-commit on tool use** (Edit/Write/Bash)
 2. **Record checkpoint** before session
-3. **Track commits** in database (session_id, agent_id)
-4. **Rollback via reset** (`git reset --hard`)
-5. **Recovery via cherry-pick** (from reflog or recovery branch)
-6. **Optional recovery branches** (permanent backup before rollback)
+3. **Auto-checkpoint on fork** (when conversation forks detected via JSONL - see [02-research-findings.md] Finding 9)
+4. **Track commits** in database (session_id, agent_id, fork relationships)
+5. **Track fork tree** (parent_uuid, child_uuid, fork_point_commit)
+6. **Rollback via reset** (`git reset --hard`)
+7. **Recovery via cherry-pick** (from reflog or recovery branch)
+8. **Optional recovery branches** (permanent backup before rollback)
+9. **Fork visualization** (show git state per conversation branch)
 
 ### Why Not the Others?
 

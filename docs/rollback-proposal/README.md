@@ -16,7 +16,7 @@ Read in this order for complete understanding:
 
 2. **[01-problem-statement.md](01-problem-statement.md)**
    - Detailed analysis of Claude Code's rollback limitations
-   - User requirements and constraints
+   - User requirements and constraints (including **fork awareness**)
    - Why existing solutions fail
    - The constraint trilemma
    - 15-minute read
@@ -25,35 +25,56 @@ Read in this order for complete understanding:
    - Comprehensive research into rollback strategies
    - Git worktree analysis
    - Reflog deep dive
+   - **Fork detection patterns** (Finding 9)
    - Critical analysis of JSONL reversal
    - Industry practices from AI coding tools
-   - 20-minute read
+   - 25-minute read
 
 4. **[03-options-analysis.md](03-options-analysis.md)**
    - Comparative evaluation of 8 strategies
-   - Scoring matrix (Clean History, Single Dir, Reliable Rollback, etc.)
+   - Scoring matrix (9 criteria including **Fork Awareness**)
    - Detailed pros/cons for each option
    - Feature comparison tables
    - 25-minute read
 
 5. **[04-solution-selection.md](04-solution-selection.md)**
    - Rationale for choosing reflog-based approach
+   - **Fork integration** architecture
    - Why it's superior to alternatives
    - Risk assessment and mitigations
    - Alignment with industry practices
    - 20-minute read
 
 6. **[05-implementation-plan.md](05-implementation-plan.md)**
-   - Detailed 8-week implementation roadmap
+   - Detailed 9-week implementation roadmap
    - Code examples for GitRollbackManager
-   - Database schema changes
-   - UI integration details
+   - **Fork detection phase** (Phase 2.5)
+   - Database schema changes (including fork tables)
+   - UI integration details (including **fork visualization**)
    - Testing strategy
-   - 30-minute read
+   - 35-minute read
+
+7. **[06-system-design.md](06-system-design.md)**
+   - Complete technical design specification
+   - Component architecture (including **ForkManager**)
+   - Database schema with **fork relationships**
+   - API design (including **fork endpoints**)
+   - **Fork tree visualization** UI mockups
+   - Performance and testing strategy
+   - 40-minute read
+
+8. **[07-fork-integration.md](07-fork-integration.md)** ⭐ **NEW**
+   - Comprehensive fork detection integration guide
+   - Automatic checkpoint on fork creation
+   - Fork tree visualization with git state
+   - Rollback to fork point workflows
+   - Cross-session fork detection
+   - Implementation roadmap extension
+   - 45-minute read
 
 ### Additional Analysis
 
-7. **[99-critical-analysis.md](99-critical-analysis.md)** 🔍 NOT in Executive Summary
+9. **[99-critical-analysis.md](99-critical-analysis.md)** 🔍 NOT in Executive Summary
    - Ruthlessly critical evaluation of the proposed solution
    - Potential failure modes and edge cases
    - Security and compliance concerns
@@ -71,9 +92,9 @@ Read in this order for complete understanding:
 - Decision: Approve or request clarification
 
 **For Technical Reviewers:**
-- Read: All documents 01-05 (110 min = ~2 hours)
+- Read: All documents 01-07 (205 min = ~3.5 hours)
 - Read: 99-critical-analysis.md (25 min)
-- Review: Implementation plan details
+- Review: Implementation plan and fork integration details
 - Provide feedback on approach and timeline
 
 **For Implementers:**
@@ -85,24 +106,29 @@ Read in this order for complete understanding:
 
 ### The Problem
 - Claude Code's rewind feature doesn't track Bash operations
+- **Conversation forks not tracked** - No checkpoints at fork points
 - Git worktrees require infrastructure duplication
 - JSONL-based reversal is fundamentally unreliable
-- Need: Clean history + Single directory + Reliable rollback
+- Need: Clean history + Single directory + Reliable rollback + **Fork awareness**
 
 ### The Solution
-**Reflog-Based Rollback**
+**Reflog-Based Rollback with Fork Detection**
 - Auto-commit after each Edit/Write/Bash operation
+- **Automatic checkpoint on conversation fork** (no user action required)
+- **Fork tree visualization** showing git state per branch
 - User reviews commits and decides: keep or rollback
 - Rollback via `git reset --hard` (commits → reflog)
+- **Rollback to fork point** (not just session start)
 - 180-day recovery window (configurable)
 - Optional recovery branches for permanent backup
 
 ### Why This Solution
-- ✅ Only option satisfying all three constraints
-- ✅ Highest score in analysis (77/80 points)
+- ✅ Only option satisfying all constraints (including fork awareness)
+- ✅ Highest score in analysis (87/90 points)
 - ✅ Built on proven git technology
+- ✅ **Fork detection already proven** with existing implementation
 - ✅ Aligns with AI coding tool patterns
-- ✅ 8-week implementation timeline
+- ✅ 9-week implementation timeline
 
 ### Critical Concerns
 - ⚠️ Time-limited recovery (180 days)
@@ -117,7 +143,7 @@ Read in this order for complete understanding:
 
 **Recommendation:** Proceed with implementation
 
-**Timeline:** 8 weeks (single developer)
+**Timeline:** 9 weeks (single developer)
 
 **Risk Level:** Low-Medium (with mitigations)
 
@@ -130,17 +156,27 @@ For questions or clarifications about this proposal:
 
 ## Document Statistics
 
-- **Total Pages:** ~120 pages (if printed)
-- **Total Words:** ~35,000 words
-- **Total Reading Time:** ~3 hours (all documents)
-- **Code Examples:** 20+ code snippets
-- **Diagrams:** ASCII art flowcharts and trees
-- **Tables:** 15+ comparison tables
+- **Total Pages:** ~180 pages (if printed)
+- **Total Words:** ~50,000 words
+- **Total Reading Time:** ~4.5 hours (all main documents)
+- **Code Examples:** 30+ code snippets
+- **Diagrams:** ASCII art flowcharts, trees, and UI mockups
+- **Tables:** 20+ comparison tables
+- **Main Documents:** 8 (01-07 + 00-executive-summary)
+- **Additional Documents:** 1 (99-critical-analysis)
 
 ## Version History
 
+- **v2.0** (November 2025) - Fork integration update
+  - Added 07-fork-integration.md (comprehensive fork detection integration)
+  - Updated all documents (01-06) with fork awareness requirements
+  - Updated executive summary with fork detection overview
+  - Extended timeline from 8 weeks to 9 weeks
+  - Raised score from 77/80 to 87/90 with fork awareness criterion
+  - Added ~15,000 words of fork integration documentation
+
 - **v1.0** (November 2025) - Initial proposal
-  - All 7 documents completed
+  - All 7 documents completed (01-06 + 99-critical-analysis)
   - Comprehensive research and analysis
   - Detailed implementation plan
   - Critical analysis included

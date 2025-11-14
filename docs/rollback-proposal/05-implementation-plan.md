@@ -417,7 +417,211 @@ def update_checkpoint_status(self, session_uuid: str, status: str):
 - [ ] Test migration on existing database
 - [ ] Add rollback migration (if needed)
 
-## Phase 3: Auto-Commit Integration (Week 3)
+## Phase 2.5: Fork Detection Integration (Week 3)
+
+### Overview
+
+Integrate automatic fork detection and checkpoint creation based on [02-research-findings.md] Finding 9. This phase adds fork awareness to the rollback system, enabling automatic checkpoints when conversations fork and tracking git state per conversation branch.
+
+### ForkManager Component
+
+**Responsibility:** Detect conversation forks via JSONL monitoring and create automatic checkpoints
+
+**Interface Description:**
+```python
+class ForkManager:
+    """
+    Manages fork detection and checkpoint creation.
+    Integrates with existing JSONL processor to detect fork events.
+    """
+
+    def __init__(self, git_manager, database):
+        """Initialize with GitManager and Database instances"""
+
+    def on_fork_detected(self, parent_uuid: str, child_uuid: str) -> dict:
+        """
+        Called when JSONL processor detects fork (new session with parent_uuid).
+        Creates automatic checkpoint at fork point.
+        Records fork relationship in database.
+        Returns: fork checkpoint info including commit hash
+        """
+
+    def get_fork_tree(self, root_uuid: str) -> dict:
+        """
+        Builds fork tree from database relationships.
+        Returns: nested structure of all fork branches
+        """
+
+    def get_fork_point(self, fork_uuid: str) -> dict:
+        """
+        Retrieves fork point checkpoint for a forked session.
+        Returns: fork_point_commit, parent_uuid, timestamp
+        """
+```
+
+### Database Migration for Fork Tracking
+
+**Schema Extension:**
+```sql
+-- New table: conversation_forks
+CREATE TABLE IF NOT EXISTS conversation_forks (
+    parent_uuid TEXT NOT NULL,
+    child_uuid TEXT NOT NULL,
+    fork_point_commit TEXT NOT NULL,
+    fork_checkpoint_id TEXT,
+    message_uuid TEXT,  -- For conversation context
+    created_at TIMESTAMP NOT NULL,
+    PRIMARY KEY (parent_uuid, child_uuid),
+    FOREIGN KEY (parent_uuid) REFERENCES sessions(uuid),
+    FOREIGN KEY (child_uuid) REFERENCES sessions(uuid)
+);
+
+-- Extend sessions table
+ALTER TABLE sessions ADD COLUMN fork_parent_uuid TEXT;
+ALTER TABLE sessions ADD COLUMN current_commit TEXT;
+
+-- Extend git_checkpoints table
+ALTER TABLE git_checkpoints ADD COLUMN message_uuid TEXT;
+ALTER TABLE git_checkpoints ADD COLUMN checkpoint_type TEXT DEFAULT 'manual';
+
+-- Indexes for performance
+CREATE INDEX idx_conversation_forks_parent ON conversation_forks(parent_uuid);
+CREATE INDEX idx_conversation_forks_child ON conversation_forks(child_uuid);
+CREATE INDEX idx_sessions_fork_parent ON sessions(fork_parent_uuid);
+```
+
+### Database Methods for Fork Operations
+
+**Method Interfaces:**
+```python
+# database.py additions
+
+def create_fork_relationship(
+    self,
+    parent_uuid: str,
+    child_uuid: str,
+    fork_point_commit: str,
+    fork_checkpoint_id: str
+) -> None:
+    """
+    Record fork relationship when conversation branches.
+    Links parent and child sessions with git commit at fork point.
+    """
+
+def get_fork_children(self, parent_uuid: str) -> List[dict]:
+    """
+    Get all child sessions that forked from parent.
+    Returns: list of fork records with child_uuid, fork_point_commit, created_at
+    """
+
+def get_fork_tree(self, root_uuid: str) -> dict:
+    """
+    Recursively build entire fork tree from root session.
+    Returns: nested dict structure representing fork hierarchy
+    """
+
+def update_session_commit(self, session_uuid: str, commit_hash: str) -> None:
+    """
+    Update current_commit for session as work progresses.
+    Used for tracking git state per conversation branch.
+    """
+
+def get_checkpoints_with_context(
+    self,
+    session_uuid: str,
+    limit: int = 50
+) -> List[dict]:
+    """
+    Get checkpoints with message context for UI navigation.
+    Returns bounded list with message_uuid and preview.
+    """
+
+def get_checkpoint_messages(
+    self,
+    checkpoint_id: str,
+    before: int = 30,
+    after: int = 0
+) -> List[dict]:
+    """
+    Get conversation messages around checkpoint.
+    Default: last 30 messages before checkpoint.
+    """
+```
+
+### JSONL Integration for Fork Detection
+
+**Hook Point:**
+```python
+# jsonl_processor.py integration
+
+def process_session_entry(entry: dict):
+    """
+    Process session start entry from JSONL.
+    Detects fork by checking for parent_session_uuid field.
+    """
+    session_uuid = entry.get('uuid')
+    parent_uuid = entry.get('parent_session_uuid')
+
+    if parent_uuid:
+        # Fork detected!
+        fork_manager.on_fork_detected(
+            parent_uuid=parent_uuid,
+            child_uuid=session_uuid
+        )
+```
+
+**Detection Pattern:**
+- Monitor JSONL for new session entries with `parent_session_uuid` field
+- Cross-session detection (fork may be in different .jsonl file)
+- Real-time detection via file watcher (2-second poll interval)
+- ~115ms overhead per fork event (acceptable)
+
+### Testing for Fork Detection
+
+**Test Scenarios:**
+
+1. **Single Fork Detection**
+   - Create parent session with checkpoint
+   - Create child session with parent_uuid
+   - Verify automatic checkpoint created at fork point
+   - Verify database records fork relationship
+
+2. **Multiple Forks from Same Parent**
+   - Create parent session
+   - Create 3 child sessions from same parent
+   - Verify 3 separate fork checkpoints
+   - Verify all fork relationships recorded
+
+3. **Nested Forks (Fork of Fork)**
+   - Create parent → child1 → grandchild
+   - Verify checkpoint at each fork point
+   - Verify fork tree builds correctly
+
+4. **Cross-Session File Fork Detection**
+   - Parent in session-abc.jsonl
+   - Child in session-def.jsonl
+   - Verify detection across files
+
+5. **Performance Test**
+   - Create 10+ forks in rapid succession
+   - Verify all detected within expected timeframe
+   - Verify no checkpoint creation failures
+
+### Tasks
+
+- [ ] Implement ForkManager class
+- [ ] Add conversation_forks table migration
+- [ ] Add fork-related database methods
+- [ ] Add checkpoint selector methods (get_checkpoints_with_context, get_checkpoint_messages)
+- [ ] Integrate fork detection into JSONL processor
+- [ ] Store message_uuid with each checkpoint
+- [ ] Write unit tests for fork detection
+- [ ] Write integration tests for checkpoint creation
+- [ ] Test cross-session fork detection
+- [ ] Test message context retrieval
+- [ ] Document fork detection behavior
+
+## Phase 3: Auto-Commit Integration (Week 4)
 
 ### Update: Tool Result Processing
 
@@ -469,7 +673,7 @@ def generate_description(tool_name: str, tool_input: Dict) -> str:
 - [ ] Test with sample sessions
 - [ ] Handle errors gracefully
 
-## Phase 4: Web UI Integration (Week 4-5)
+## Phase 4: Web UI Integration (Week 5-6)
 
 ### New API Routes: `claude_log_viewer/app.py`
 
@@ -507,6 +711,30 @@ def recover_commit(commit_hash):
     """Cherry-pick commit from reflog."""
     success = git_manager.recover_commit(commit_hash)
     return jsonify({'success': success})
+
+# Fork-aware API endpoints
+@app.route('/api/sessions/<session_id>/fork-tree', methods=['GET'])
+def get_fork_tree(session_id):
+    """Get fork tree for session (parent and all children)."""
+    tree = fork_manager.get_fork_tree(session_id)
+    return jsonify(tree)
+
+@app.route('/api/sessions/<session_id>/rollback-to-fork', methods=['POST'])
+def rollback_to_fork_point(session_id):
+    """Rollback to fork point (where this session branched from parent)."""
+    fork_info = fork_manager.get_fork_point(session_id)
+    if not fork_info:
+        return jsonify({'error': 'Not a forked session'}), 400
+    result = git_manager.rollback_to_commit(fork_info['fork_point_commit'])
+    return jsonify(result)
+
+@app.route('/api/forks/compare', methods=['POST'])
+def compare_forks():
+    """Compare changes between two fork branches."""
+    fork_a_uuid = request.json.get('fork_a')
+    fork_b_uuid = request.json.get('fork_b')
+    comparison = fork_manager.compare_fork_branches(fork_a_uuid, fork_b_uuid)
+    return jsonify(comparison)
 ```
 
 ### UI Components
@@ -610,14 +838,223 @@ def recover_commit(commit_hash):
 </div>
 ```
 
+**Fork Tree Visualization Component:**
+
+```javascript
+<div className="fork-tree-view">
+  <h3>Conversation Fork Tree</h3>
+  <ForkTreeNode node={rootNode} depth={0} />
+</div>
+
+const ForkTreeNode = ({ node, depth }) => (
+  <div className="fork-node" style={{ marginLeft: depth * 20 }}>
+    <div className="fork-header">
+      <span className="fork-icon">{depth > 0 ? '└─' : ''}</span>
+      <span className="session-label">
+        {node.is_current ? '● ' : '○ '}
+        {node.session_name || node.session_uuid.substring(0, 8)}
+      </span>
+      {node.fork_point_commit && (
+        <span className="git-hash">
+          Fork point: {node.fork_point_commit.substring(0, 8)}
+        </span>
+      )}
+      <span className="fork-time">{formatTime(node.created_at)}</span>
+    </div>
+
+    <div className="fork-stats">
+      Current: {node.current_commit?.substring(0, 8)} •
+      {node.commits_ahead} commits since fork
+    </div>
+
+    <div className="fork-actions">
+      <button onClick={() => viewForkDiff(node)}>View Changes</button>
+      <button onClick={() => rollbackToFork(node)}>Rollback to Fork Point</button>
+      {node.siblings?.length > 0 && (
+        <button onClick={() => compareForks(node)}>Compare with Siblings</button>
+      )}
+    </div>
+
+    {node.children?.map(child => (
+      <ForkTreeNode key={child.session_uuid} node={child} depth={depth + 1} />
+    ))}
+  </div>
+);
+```
+
+**Checkpoint Selector Component (Non-Destructive UI):**
+
+```javascript
+const CheckpointSelector = ({ sessionId }) => {
+  const [checkpoints, setCheckpoints] = useState([]);
+  const [currentIndex, setCurrentIndex] = useState(0);
+  const [messages, setMessages] = useState([]);
+
+  const currentCheckpoint = checkpoints[currentIndex];
+
+  useEffect(() => {
+    // Load checkpoints with context
+    fetch(`/api/sessions/${sessionId}/checkpoints?limit=50`)
+      .then(res => res.json())
+      .then(data => setCheckpoints(data.checkpoints));
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (currentCheckpoint) {
+      // Load last 30 messages for context
+      fetch(`/api/checkpoints/${currentCheckpoint.checkpoint_id}/messages?before=30`)
+        .then(res => res.json())
+        .then(data => setMessages(data.messages));
+    }
+  }, [currentCheckpoint]);
+
+  const handlePrevious = () => {
+    if (currentIndex > 0) setCurrentIndex(currentIndex - 1);
+  };
+
+  const handleNext = () => {
+    if (currentIndex < checkpoints.length - 1) setCurrentIndex(currentIndex + 1);
+  };
+
+  return (
+    <div className="checkpoint-selector">
+      <h2>Select Checkpoint to Restore</h2>
+
+      <div className="checkpoint-navigation">
+        <button onClick={handlePrevious} disabled={currentIndex === 0}>
+          ←
+        </button>
+        <span>Checkpoint {currentIndex + 1} of {checkpoints.length}</span>
+        <button onClick={handleNext} disabled={currentIndex === checkpoints.length - 1}>
+          →
+        </button>
+      </div>
+
+      {currentCheckpoint && (
+        <div className="checkpoint-details">
+          <div className="checkpoint-header">
+            <span className="checkpoint-type">{currentCheckpoint.checkpoint_type}</span>
+            <span className="checkpoint-time">
+              {formatTime(currentCheckpoint.created_at)}
+            </span>
+            <span className="checkpoint-commit">
+              Commit: {currentCheckpoint.checkpoint_commit.substring(0, 8)}
+            </span>
+          </div>
+
+          <div className="checkpoint-messages">
+            <h3>Last 30 messages:</h3>
+            <div className="message-list">
+              {messages.map(msg => (
+                <div key={msg.message_uuid}
+                     className={`message ${msg.is_checkpoint ? 'checkpoint-message' : ''}`}>
+                  <div className="message-header">
+                    <span className="role">{msg.role}</span>
+                    <span className="time">{formatTime(msg.timestamp)}</span>
+                    {msg.is_checkpoint && <span className="badge">← CHECKPOINT</span>}
+                  </div>
+                  <div className="message-content">{msg.content}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="restore-actions">
+            <p className="reversibility-note">
+              All actions are reversible via reflog (180-day window)
+            </p>
+
+            <button onClick={() => handlePreview(currentCheckpoint)}>
+              Preview Changes
+            </button>
+            <p className="action-description">
+              View diff without making any changes
+            </p>
+
+            <button onClick={() => handleRollback(currentCheckpoint)}
+                    className="primary-action">
+              Rollback to Checkpoint (non-destructive)
+            </button>
+            <p className="action-description">
+              Reset to this point. Changes go to reflog (180 days)
+            </p>
+
+            <button onClick={() => handleViewMessages(currentCheckpoint)}>
+              View Messages Only
+            </button>
+            <p className="action-description">
+              Read conversation context without rollback
+            </p>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+```
+
+**Fork Comparison Modal:**
+
+```javascript
+<Modal show={showForkComparison}>
+  <h2>Compare Fork Branches</h2>
+
+  <div className="fork-comparison">
+    <div className="fork-column">
+      <h3>Fork A: {forkA.name}</h3>
+      <div className="fork-info">
+        <p>Fork point: {forkA.fork_point_commit.substring(0, 8)}</p>
+        <p>Current: {forkA.current_commit.substring(0, 8)}</p>
+        <p>Commits: {forkA.commits.length}</p>
+      </div>
+      <CommitList commits={forkA.commits} />
+    </div>
+
+    <div className="fork-divider">↔</div>
+
+    <div className="fork-column">
+      <h3>Fork B: {forkB.name}</h3>
+      <div className="fork-info">
+        <p>Fork point: {forkB.fork_point_commit.substring(0, 8)}</p>
+        <p>Current: {forkB.current_commit.substring(0, 8)}</p>
+        <p>Commits: {forkB.commits.length}</p>
+      </div>
+      <CommitList commits={forkB.commits} />
+    </div>
+  </div>
+
+  <div className="diff-preview">
+    <h3>File Changes Comparison</h3>
+    <DiffViewer
+      oldContent={forkA.diff}
+      newContent={forkB.diff}
+      splitView={true}
+    />
+  </div>
+
+  <div className="actions">
+    <button onClick={closeForkComparison}>Close</button>
+  </div>
+</Modal>
+```
+
 ### Tasks
 
-- [ ] Implement API routes
+- [ ] Implement API routes (including fork endpoints)
+- [ ] Implement checkpoint selector API endpoints
+  - [ ] GET /api/sessions/{id}/checkpoints
+  - [ ] GET /api/checkpoints/{id}/messages
+  - [ ] GET /api/checkpoints/{id}/preview
 - [ ] Create React components
-- [ ] Add modal dialogs
+- [ ] Add CheckpointSelector component with bounded navigation
+- [ ] Add fork tree visualization component
+- [ ] Add fork comparison modal
+- [ ] Implement three restore actions (Preview, Rollback, View Messages)
+- [ ] Add message context display (last 30 messages)
 - [ ] Implement diff viewer
+- [ ] Add reversibility indicators and non-destructive messaging
 - [ ] Add loading states and error handling
-- [ ] Style components
+- [ ] Style components with emphasis on non-destructive default
 
 ## Phase 5: Documentation & Testing (Week 6)
 
@@ -720,11 +1157,12 @@ def test_recover_commit():
 |-------|----------|--------------|
 | Phase 1: Core Git Module | 2 weeks | GitRollbackManager class, tests |
 | Phase 2: Database | 1 week | Schema, migrations, methods |
+| Phase 2.5: Fork Detection | 1 week | ForkManager, fork tracking, auto-checkpoints |
 | Phase 3: Auto-Commit | 1 week | JSONL integration, auto-commit |
-| Phase 4: Web UI | 2 weeks | API routes, React components |
-| Phase 5: Docs & Tests | 1 week | Documentation, test suite |
+| Phase 4: Web UI | 2 weeks | API routes, React components, fork visualization |
+| Phase 5: Docs & Tests | 1 week | Documentation, test suite, fork tests |
 | Phase 6: Polish | 1 week | Final testing, release prep |
-| **Total** | **8 weeks** | **Full implementation** |
+| **Total** | **9 weeks** | **Full implementation with fork awareness** |
 
 ## Success Metrics
 
@@ -750,4 +1188,6 @@ Post-v1.0 considerations:
 
 ## Conclusion
 
-This implementation plan provides a complete roadmap from core git integration through UI implementation to documentation and testing. The 8-week timeline is realistic for a single developer and can be accelerated with team collaboration.
+This implementation plan provides a complete roadmap from core git integration through UI implementation to documentation and testing, including fork detection and visualization. The 9-week timeline is realistic for a single developer and can be accelerated with team collaboration.
+
+**Key Addition:** Phase 2.5 adds fork awareness based on [02-research-findings.md] Finding 9, enabling automatic checkpoints when conversations fork and providing fork tree visualization in the UI.

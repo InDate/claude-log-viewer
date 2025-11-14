@@ -17,6 +17,8 @@ The reflog-based approach is the **only strategy** that satisfies all three crit
 | **Clean Git History** | ✅ Yes | `git reset --hard` removes commits from git log, making rolled-back sessions invisible |
 | **Single Working Directory** | ✅ Yes | Works on current branch, no worktrees or checkouts needed |
 | **Reliable Rollback** | ✅ Yes | Git commits capture all changes (Edit, Write, Bash operations) |
+| **Fork Awareness** | ✅ Yes | Auto-checkpoint on fork creation via JSONL monitoring (see [02-research-findings.md] Finding 9) |
+| **Fork Visualization** | ✅ Yes | Git hash per conversation branch stored in database, enables fork tree display |
 
 **All other strategies failed at least one constraint:**
 - Worktrees: Failed "single directory" (infrastructure duplication)
@@ -408,6 +410,8 @@ CREATE TABLE git_commits (
 - Git checkpoint tracking
 - Commit → session mapping
 - Reflog status tracking
+- Fork tracking (`conversation_forks` table: parent_uuid, child_uuid, fork_point_commit)
+- Session fork metadata (fork_parent_uuid, current_commit columns in `sessions` table)
 
 #### UI Integration
 
@@ -439,6 +443,8 @@ CREATE TABLE git_commits (
 
 **New hooks:**
 - **On session start:** Create checkpoint
+- **On conversation fork:** Auto-checkpoint + record fork relationship (parent_uuid, child_uuid, fork_point_commit)
+- **On fork switch:** Update current_commit tracking in sessions table
 - **On tool use (Edit/Write/Bash):** Auto-commit
 - **On session end:** Prompt for keep/rollback decision
 
