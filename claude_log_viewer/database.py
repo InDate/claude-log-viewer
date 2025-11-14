@@ -20,6 +20,16 @@ def get_db():
     """Context manager for database connections."""
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row  # Enable column access by name
+
+    # Enable WAL mode for better concurrency (CRITICAL for multi-threading)
+    # WAL (Write-Ahead Logging) allows multiple readers and one writer simultaneously
+    conn.execute('PRAGMA journal_mode=WAL')
+    conn.execute('PRAGMA synchronous=NORMAL')
+
+    # Enable foreign key constraints (CRITICAL for referential integrity)
+    # Issue #16: Foreign keys are disabled by default in SQLite
+    conn.execute('PRAGMA foreign_keys = ON')
+
     try:
         yield conn
         conn.commit()
@@ -99,7 +109,6 @@ def migrate_add_fork_tracking():
 
     Adds:
     - active_sessions TEXT: JSON array of session IDs active at this snapshot
-    - recalculated INTEGER: Flag indicating if totals have been recalculated (0 or 1)
 
     This migration is idempotent - it checks if columns exist before adding them.
     """
@@ -120,17 +129,6 @@ def migrate_add_fork_tracking():
             print("✓ Added 'active_sessions' column")
         else:
             print("✓ Column 'active_sessions' already exists")
-
-        # Add recalculated column if it doesn't exist
-        if 'recalculated' not in columns:
-            print("Adding 'recalculated' column to usage_snapshots table...")
-            cursor.execute("""
-                ALTER TABLE usage_snapshots
-                ADD COLUMN recalculated INTEGER DEFAULT 0
-            """)
-            print("✓ Added 'recalculated' column")
-        else:
-            print("✓ Column 'recalculated' already exists")
 
         conn.commit()
 
@@ -369,7 +367,6 @@ def init_db():
                 seven_day_tokens_total INTEGER,
                 seven_day_messages_total INTEGER,
                 active_sessions TEXT,
-                recalculated INTEGER DEFAULT 0,
                 created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -568,13 +565,15 @@ def get_snapshots_in_range(start_time: str, end_time: str) -> List[Dict[str, Any
         end_time: ISO format timestamp
 
     Returns:
-        List of snapshot dictionaries
+        List of snapshot dictionaries with calculated values only
     """
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT * FROM usage_snapshots
             WHERE timestamp >= ? AND timestamp <= ?
+            AND five_hour_tokens_consumed IS NOT NULL
+            AND seven_day_tokens_consumed IS NOT NULL
             ORDER BY timestamp DESC
         """, (start_time, end_time))
 
@@ -583,11 +582,18 @@ def get_snapshots_in_range(start_time: str, end_time: str) -> List[Dict[str, Any
 
 
 def get_latest_snapshot() -> Optional[Dict[str, Any]]:
-    """Get the most recent usage snapshot."""
+    """
+    Get the most recent usage snapshot with calculated values.
+
+    Only returns snapshots that have completed Phase 2 calculation
+    (i.e., have non-NULL token/message counts).
+    """
     with get_db() as conn:
         cursor = conn.cursor()
         cursor.execute("""
             SELECT * FROM usage_snapshots
+            WHERE five_hour_tokens_consumed IS NOT NULL
+            AND seven_day_tokens_consumed IS NOT NULL
             ORDER BY timestamp DESC
             LIMIT 1
         """)
@@ -680,8 +686,8 @@ def insert_snapshot_tick(
                 seven_day_tokens_consumed, seven_day_messages_count,
                 five_hour_tokens_total, five_hour_messages_total,
                 seven_day_tokens_total, seven_day_messages_total,
-                active_sessions, recalculated
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0)
+                active_sessions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         """, (
             timestamp, five_hour_used, five_hour_limit,
             seven_day_used, seven_day_limit,
