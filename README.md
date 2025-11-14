@@ -2,6 +2,20 @@
 
 An interactive web-based viewer for Claude Code JSONL transcript files with real-time monitoring, usage tracking, and git integration.
 
+## 🤔 Why Did I Build This?
+
+**Claude Code needs an observation tool.** Observing is a different activity than coding - it's about reflection, understanding, and decision-making.
+
+This tool enables:
+
+- **🔍 Reflection on Changes** - Review what Claude actually did, not just what you asked for
+- **🗺️ Retrace Agent Actions** - See the conversation branches, timeline of decisions, and evolution of solutions
+- **📋 Easy Access to Context** - Find past plans, todos, and commits without digging through files
+- **🎯 Session Discovery** - Quickly locate the correct session when resuming work
+- **⏮️ Rollback Capability** - Undo agent and standard changes through git integration (when enabled)
+
+Claude Code is powerful, but without visibility into its actions, you're flying blind. This tool gives you the observation layer that makes Claude Code truly manageable for serious development work.
+
 ## ✨ Features
 
 ### 📊 **Real-Time Session Monitoring**
@@ -164,6 +178,56 @@ The viewer will automatically load JSONL files from:
 - **Screenshots**: `~/.claude/projects/*/.claude/screenshots/`
 - **Todos**: `~/.claude/todos/`
 
+### Database Management
+
+The application stores usage snapshots, session metadata, and git checkpoints in `~/.claude/logviewer.db`.
+
+#### Rebuild Database
+
+If you need to rebuild the database (⚠️ **this will delete all usage snapshot history**):
+
+```bash
+# Stop the application first
+# Then remove the database file
+rm ~/.claude/logviewer.db
+
+# Restart the application - it will create a fresh database
+claude-log-viewer
+```
+
+The database will be recreated with:
+- ✅ Empty usage_snapshots table (history lost)
+- ✅ Fresh sessions table
+- ✅ Empty git checkpoints
+- ✅ All settings reset to defaults
+
+**Note**: JSONL transcript files are NOT affected - only the viewer's internal database is deleted.
+
+#### Backup Database
+
+To preserve your usage history:
+
+```bash
+# Create backup
+cp ~/.claude/logviewer.db ~/.claude/logviewer.db.backup
+
+# Restore from backup
+cp ~/.claude/logviewer.db.backup ~/.claude/logviewer.db
+```
+
+#### Database Schema
+
+The database includes:
+- `usage_snapshots` - API usage tracking over time
+- `sessions` - Session metadata and statistics  
+- `git_checkpoints` - Manual and automatic checkpoints
+- `git_commits` - Git commit tracking
+- `conversation_forks` - Fork detection data
+- `settings` - Application settings
+- `project_git_settings` - Per-project git configuration
+- `repo_git_settings` - Per-repository git configuration
+- `discovered_repos` - Git repository discovery cache
+
 ## 🚧 Planned Features
 
 See [docs/rollback-proposal/](docs/rollback-proposal/) for detailed design documentation of upcoming features:
@@ -177,8 +241,11 @@ See [docs/rollback-proposal/](docs/rollback-proposal/) for detailed design docum
 
 ## 🐛 Known Issues
 
-- **Token Delta Calculation** - Reset time jitter from API causes unstable deltas ([Issue #9](https://github.com/InDate/claude-log-viewer/issues/9))
 - **Cross-Platform Testing** - Only tested on macOS, needs Windows/Linux verification ([Issue #5](https://github.com/InDate/claude-log-viewer/issues/5))
+
+### Recently Fixed
+
+- ✅ **Token Delta Calculation** - Fixed in v1.0.1 ([Issue #9](https://github.com/InDate/claude-log-viewer/issues/9))
 
 ## 🤝 Contributing
 
