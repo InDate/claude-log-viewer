@@ -1,10 +1,10 @@
 // Entry rendering and field selection
 
-import { allEntries, selectedFields, pendingSelectedFields, currentFilters, selectedSession, renderedEntryIds, knownFields, saveSelectedFields, setPendingSelectedFields, currentViewMode } from './state.js';
+import { allEntries, selectedFields, pendingSelectedFields, currentFilters, selectedSession, renderedEntryIds, knownFields, saveSelectedFields, setPendingSelectedFields, currentViewMode, fullFileSearchActive, fullFileSearchQuery, setFullFileSearchActive } from './state.js';
 import { getEntryId, getSessionColor, truncateContent, formatRelativeTime, copyToClipboard, formatNumber, formatTimestamp, getUsageClass } from './utils.js';
 import { showContentDialog, showToolDetailsDialog, showTimelinePlanDialog, showTimelineTodoDialog } from './modals.js';
 import { updateStats } from './sessions.js';
-import { loadTimelineGraph } from './api.js';
+import { loadTimelineGraph, loadEntries } from './api.js';
 
 // Cache for field examples (performance optimization)
 let fieldExamplesCache = new Map();
@@ -334,6 +334,11 @@ function updateFilterState() {
 function createEntryRow(entry) {
     const row = document.createElement('tr');
     row.dataset.entryId = getEntryId(entry);
+
+    // Highlight rows that match search query
+    if (entry._search_match) {
+        row.classList.add('search-match');
+    }
 
     // Special handling for usage-increment rows
     if (entry.type === 'usage-increment' && entry._isSnapshot) {
@@ -1425,33 +1430,32 @@ function getConnectorChar(entry, index, allEntries) {
 
 export function renderEntries() {
     const container = document.getElementById('entriesContainer');
-    const typeFilter = document.getElementById('typeFilter').value;
-    const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-    const limit = parseInt(document.getElementById('limitSelect').value);
+    const rawSearchTerm = document.getElementById('searchInput').value;
 
-    let filtered = allEntries;
-
-    if (typeFilter) {
-        if (typeFilter === 'tool_result') {
-            // Filter for entries that have tool results
-            filtered = filtered.filter(e => e.has_tool_results);
-        } else {
-            filtered = filtered.filter(e => e.type === typeFilter);
+    // Check for --all flag to search all files
+    if (rawSearchTerm.includes('--all')) {
+        const query = rawSearchTerm.replace('--all', '').trim();
+        if (query) {
+            // Only trigger search if query changed
+            if (!fullFileSearchActive || query !== fullFileSearchQuery) {
+                searchAllFiles(query);
+            }
+            return;
         }
     }
 
-    if (searchTerm) {
-        filtered = filtered.filter(e =>
-            JSON.stringify(e).toLowerCase().includes(searchTerm)
-        );
+    // Clear full file search state when doing normal search
+    if (fullFileSearchActive) {
+        setFullFileSearchActive(false);
     }
 
-    // Filter by selected session
-    if (selectedSession) {
-        filtered = filtered.filter(e => e.sessionId === selectedSession);
-    }
+    // Parse search term for file: prefix
+    const searchTerm = rawSearchTerm.trim();
+    const hasFileFilter = searchTerm.startsWith('file:');
+    const hasSearchQuery = searchTerm && !hasFileFilter;
 
-    filtered = filtered.slice(0, limit);
+    // Server already filtered - just render what we have
+    const filtered = allEntries;
 
     // Check view mode and render accordingly
     if (currentViewMode === 'timeline') {
@@ -1462,104 +1466,334 @@ export function renderEntries() {
     // Continue with normal table rendering
 
     if (filtered.length === 0) {
-        container.innerHTML = '<div class="empty-state"><h2>No entries found</h2><p>Try adjusting your filters</p></div>';
+        let emptyHtml = '<div class="empty-state"><h2>No entries found</h2><p>Try adjusting your filters</p>';
+        // If there's a search term, offer to search all files
+        if (searchTerm && !hasFileFilter) {
+            emptyHtml += `<button id="searchAllFilesBtn" class="search-all-btn">Search all files for "${searchTerm}"</button>`;
+            emptyHtml += '<p class="search-all-hint">This will search all JSONL files on disk (slower but comprehensive)</p>';
+        }
+        emptyHtml += '</div>';
+        container.innerHTML = emptyHtml;
+
+        // Add click handler for search all files button
+        const searchAllBtn = document.getElementById('searchAllFilesBtn');
+        if (searchAllBtn) {
+            searchAllBtn.addEventListener('click', () => searchAllFiles(searchTerm));
+        }
+
         renderedEntryIds.clear();
-        updateFilterState();
         return;
     }
 
-    // Check if we need a full rebuild or can append
-    const needsRebuild = filtersChanged();
+    // If there's a search query (not file filter), show clickable search results
+    if (hasSearchQuery) {
+        renderSearchResults(filtered, searchTerm);
+        return;
+    }
 
-    if (needsRebuild) {
-        // Full rebuild needed
-        renderedEntryIds.clear();
+    // Normal table rendering (no search, or file: filter with highlights)
+    renderedEntryIds.clear();
 
-        // Create table
-        const table = document.createElement('table');
+    // Create table
+    const table = document.createElement('table');
 
-        // Create header
-        const thead = document.createElement('thead');
-        const headerRow = document.createElement('tr');
+    // Create header
+    const thead = document.createElement('thead');
+    const headerRow = document.createElement('tr');
 
-        Array.from(selectedFields).forEach(fieldName => {
-            const th = document.createElement('th');
-            th.textContent = fieldName;
-            headerRow.appendChild(th);
-        });
+    Array.from(selectedFields).forEach(fieldName => {
+        const th = document.createElement('th');
+        th.textContent = fieldName;
+        headerRow.appendChild(th);
+    });
 
-        thead.appendChild(headerRow);
-        table.appendChild(thead);
+    thead.appendChild(headerRow);
+    table.appendChild(thead);
 
-        // Create body
-        const tbody = document.createElement('tbody');
+    // Create body
+    const tbody = document.createElement('tbody');
 
-        filtered.forEach(entry => {
-            const row = createEntryRow(entry);
-            tbody.appendChild(row);
-            renderedEntryIds.add(getEntryId(entry));
-        });
+    filtered.forEach(entry => {
+        const row = createEntryRow(entry);
+        tbody.appendChild(row);
+        renderedEntryIds.add(getEntryId(entry));
+    });
 
-        table.appendChild(tbody);
+    table.appendChild(tbody);
 
-        container.innerHTML = '';
-        const tableContainer = document.createElement('div');
-        tableContainer.className = 'table-container';
-        tableContainer.appendChild(table);
-        container.appendChild(tableContainer);
+    container.innerHTML = '';
+    const tableContainer = document.createElement('div');
+    tableContainer.className = 'table-container';
+    tableContainer.appendChild(table);
+    container.appendChild(tableContainer);
 
-        updateFilterState();
-    } else {
-        // Incremental update - only add new entries
-        const existingTable = container.querySelector('table');
+    updateStats();
+}
 
-        if (!existingTable) {
-            // Table doesn't exist, do full rebuild
-            renderedEntryIds.clear();
+/**
+ * Render search results as clickable rows (for normal search)
+ */
+function renderSearchResults(entries, searchQuery) {
+    const container = document.getElementById('entriesContainer');
 
-            const table = document.createElement('table');
-            const thead = document.createElement('thead');
-            const headerRow = document.createElement('tr');
+    // Filter out usage-increment entries
+    const filtered = entries.filter(e => e.type !== 'usage-increment');
 
-            Array.from(selectedFields).forEach(fieldName => {
-                const th = document.createElement('th');
-                th.textContent = fieldName;
-                headerRow.appendChild(th);
+    // Set up the results container with header and table structure
+    container.innerHTML = `
+        <div class="search-results-header">
+            <h3>Found ${filtered.length} result(s) for "${searchQuery}"</h3>
+            <p class="search-progress">Click a row to view full file history</p>
+        </div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>role</th>
+                        <th>when</th>
+                        <th>content</th>
+                        <th>sessionId</th>
+                        <th>project</th>
+                    </tr>
+                </thead>
+                <tbody id="searchResultsBody"></tbody>
+            </table>
+        </div>
+    `;
+
+    const tbody = document.getElementById('searchResultsBody');
+
+    // Sort by timestamp (newest first)
+    const sorted = [...filtered].sort((a, b) => {
+        const tsA = a.timestamp || '';
+        const tsB = b.timestamp || '';
+        return tsB.localeCompare(tsA);
+    });
+
+    sorted.forEach(entry => {
+        tbody.appendChild(createSearchResultRow(entry, searchQuery));
+    });
+}
+
+/**
+ * Search all JSONL files on disk (bypasses in-memory entry limit)
+ * Uses streaming to show results as they're found
+ */
+async function searchAllFiles(query) {
+    // Mark that we're doing a full file search with this query
+    setFullFileSearchActive(true, query);
+
+    const container = document.getElementById('entriesContainer');
+
+    // Set up the results container with header and table structure
+    container.innerHTML = `
+        <div class="search-results-header">
+            <h3 id="searchStatusText">Searching all files for "${query}"...</h3>
+            <p id="searchProgress" class="search-progress">Starting search...</p>
+        </div>
+        <div class="table-container">
+            <table>
+                <thead>
+                    <tr>
+                        <th>role</th>
+                        <th>when</th>
+                        <th>content</th>
+                        <th>sessionId</th>
+                        <th>project</th>
+                    </tr>
+                </thead>
+                <tbody id="searchResultsBody"></tbody>
+            </table>
+        </div>
+    `;
+
+    const statusText = document.getElementById('searchStatusText');
+    const progressText = document.getElementById('searchProgress');
+    const tbody = document.getElementById('searchResultsBody');
+
+    try {
+        const limit = document.getElementById('limitSelect').value;
+        const response = await fetch(`/api/search/stream?q=${encodeURIComponent(query)}&limit=${limit}`);
+
+        if (!response.ok) {
+            // Fall back to non-streaming endpoint
+            const fallbackResponse = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+            const data = await fallbackResponse.json();
+
+            if (data.error) {
+                statusText.textContent = 'Search Error';
+                progressText.textContent = data.error;
+                return;
+            }
+
+            statusText.textContent = `Found ${data.total} result(s) in ${data.files_searched} files`;
+            progressText.textContent = data.truncated ? `Results limited to ${data.limit} entries` : '';
+
+            data.entries.forEach(entry => {
+                tbody.appendChild(createSearchResultRow(entry, query));
             });
+            return;
+        }
 
-            thead.appendChild(headerRow);
-            table.appendChild(thead);
+        // Stream results - collect all, then sort and render
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let filesSearched = 0;
+        const collectedEntries = [];
 
-            const tbody = document.createElement('tbody');
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
 
-            filtered.forEach(entry => {
-                const row = createEntryRow(entry);
-                tbody.appendChild(row);
-                renderedEntryIds.add(getEntryId(entry));
-            });
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop(); // Keep incomplete line in buffer
 
-            table.appendChild(tbody);
+            for (const line of lines) {
+                if (!line.trim()) continue;
 
-            container.innerHTML = '';
-            const tableContainer = document.createElement('div');
-            tableContainer.className = 'table-container';
-            tableContainer.appendChild(table);
-            container.appendChild(tableContainer);
-        } else {
-            // Append only new entries
-            const tbody = existingTable.querySelector('tbody');
+                try {
+                    const data = JSON.parse(line);
 
-            filtered.forEach(entry => {
-                const entryId = getEntryId(entry);
-                if (!renderedEntryIds.has(entryId)) {
-                    const row = createEntryRow(entry);
-                    // Insert at the beginning (newest first)
-                    tbody.insertBefore(row, tbody.firstChild);
-                    renderedEntryIds.add(entryId);
+                    if (data.type === 'progress') {
+                        filesSearched = data.files_searched;
+                        progressText.textContent = `Searched ${filesSearched} files, found ${collectedEntries.length} results...`;
+                    } else if (data.type === 'result') {
+                        collectedEntries.push(data.entry);
+                        statusText.textContent = `Found ${collectedEntries.length} result(s) so far...`;
+                    } else if (data.type === 'done') {
+                        // Sort by timestamp (newest first) and render
+                        collectedEntries.sort((a, b) => {
+                            const tsA = a.timestamp || '';
+                            const tsB = b.timestamp || '';
+                            return tsB.localeCompare(tsA);
+                        });
+
+                        // Clear and re-render sorted
+                        tbody.innerHTML = '';
+                        collectedEntries.forEach(entry => {
+                            tbody.appendChild(createSearchResultRow(entry, query));
+                        });
+
+                        statusText.textContent = `Found ${data.total} result(s) in ${data.files_searched} files`;
+                        progressText.textContent = data.truncated ? `Results limited to ${data.limit} entries` : 'Search complete';
+                    }
+                } catch (e) {
+                    // Skip malformed lines
                 }
+            }
+        }
+
+    } catch (error) {
+        console.error('Error searching all files:', error);
+        statusText.textContent = 'Search Error';
+        progressText.textContent = error.message;
+    }
+}
+
+/**
+ * Build full content string for an entry (for modal display)
+ */
+function buildFullEntryContent(entry) {
+    let content = '';
+
+    // Header with metadata
+    content += `# Entry Details\n\n`;
+    content += `**Type:** ${entry.type || entry.role || 'N/A'}\n`;
+    content += `**Timestamp:** ${entry.timestamp || 'N/A'}\n`;
+    content += `**Session:** ${entry.sessionId || 'N/A'}\n`;
+    if (entry._file) {
+        content += `**File:** ${entry._file}\n`;
+    }
+    content += '\n---\n\n';
+
+    // Main content
+    if (entry.content_display) {
+        content += `## Content\n\n${entry.content_display}\n\n`;
+    }
+
+    // Tool items if present
+    if (entry.tool_items) {
+        if (entry.tool_items.tool_uses && entry.tool_items.tool_uses.length > 0) {
+            content += `## Tool Uses\n\n`;
+            entry.tool_items.tool_uses.forEach((tool, i) => {
+                content += `### ${tool.name || 'Unknown Tool'}\n\n`;
+                content += '```json\n' + JSON.stringify(tool.input, null, 2) + '\n```\n\n';
+            });
+        }
+        if (entry.tool_items.tool_results && entry.tool_items.tool_results.length > 0) {
+            content += `## Tool Results\n\n`;
+            entry.tool_items.tool_results.forEach((result, i) => {
+                content += '```\n' + (typeof result.content === 'string' ? result.content : JSON.stringify(result.content, null, 2)) + '\n```\n\n';
             });
         }
     }
 
-    updateStats();
+    // Full JSON for reference
+    content += `## Raw JSON\n\n`;
+    content += '```json\n' + JSON.stringify(entry, null, 2) + '\n```\n';
+
+    return content;
+}
+
+/**
+ * Create a table row for a search result entry
+ */
+function createSearchResultRow(entry, searchQuery) {
+    const row = document.createElement('tr');
+    row.style.cursor = 'pointer';
+
+    // On click, load the full file into the main table view
+    row.addEventListener('click', () => {
+        const filePath = entry._file || entry._file_path;
+        if (filePath) {
+            // Update search box to show file filter with search term for highlighting
+            const searchInput = document.getElementById('searchInput');
+            searchInput.value = `file:${filePath}` + (searchQuery ? ` ${searchQuery}` : '');
+
+            // Clear full file search state
+            setFullFileSearchActive(false);
+
+            // Load entries from this file with search query for highlighting
+            loadEntries({
+                file: filePath,
+                q: searchQuery || '',
+                limit: document.getElementById('limitSelect').value
+            });
+        }
+    });
+
+    // Role
+    const roleCell = document.createElement('td');
+    roleCell.innerHTML = `<span class="role-tag ${entry.type || entry.role || ''}">${entry.type || entry.role || '-'}</span>`;
+    row.appendChild(roleCell);
+
+    // When
+    const whenCell = document.createElement('td');
+    whenCell.textContent = entry.timestamp ? formatRelativeTime(entry.timestamp) : '-';
+    row.appendChild(whenCell);
+
+    // Content
+    const contentCell = document.createElement('td');
+    const content = entry.content_display || entry.content || '';
+    contentCell.textContent = truncateContent(content, 150);
+    contentCell.title = 'Click to load full file';
+    row.appendChild(contentCell);
+
+    // Session ID
+    const sessionCell = document.createElement('td');
+    const sessionId = entry.sessionId || '';
+    sessionCell.innerHTML = sessionId ? `<span class="session-tag">${sessionId.substring(0, 8)}...</span>` : '-';
+    row.appendChild(sessionCell);
+
+    // Project (from file path)
+    const projectCell = document.createElement('td');
+    const filePath = entry._file || '';
+    const projectMatch = filePath.match(/projects\/([^\/]+)\//);
+    projectCell.textContent = projectMatch ? projectMatch[1].replace(/-/g, '/').substring(0, 30) : '-';
+    projectCell.title = filePath;
+    row.appendChild(projectCell);
+
+    return row;
 }
