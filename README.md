@@ -27,6 +27,10 @@ Claude Code is powerful, but without visibility into its actions, you're flying 
 
 ### 🔍 **Advanced Filtering & Search**
 - Full-text search across all message content
+- **Clickable search results** - click any result to load full file history
+- **`--all` flag** - search all JSONL files on disk (e.g., `myterm --all`)
+- **`file:` prefix** - filter by specific file (e.g., `file:/path/to/file.jsonl`)
+- **Highlighted matches** - matching rows highlighted when viewing file
 - Filter by message type (user, assistant, tool_result, file-history)
 - Limit display (50, 100, 200, 500 entries)
 - Session-specific filtering
@@ -122,6 +126,24 @@ Open your browser to:
 http://localhost:5001
 ```
 
+### CLI Search Tools
+
+For searching log files from the command line:
+
+```bash
+# Search for a pattern across all projects
+claude-log-tools search "error" --days 7
+
+# Search within a specific project
+claude-log-tools search "TODO" --project my-project
+
+# Count entries per session/project
+claude-log-tools count --days 3
+
+# List sessions with metadata
+claude-log-tools sessions --project my-project --days 14
+```
+
 The viewer will automatically load JSONL files from:
 - `~/.claude/projects/` - Claude Code session transcripts
 - `~/.claude/todos/` - Todo lists
@@ -130,6 +152,10 @@ The viewer will automatically load JSONL files from:
 
 ### Main Interface
 - **Search**: Filter entries by any text content
+  - Results are clickable - click to load the full file history
+  - Add `--all` to search all files on disk (slower but comprehensive)
+  - Use `file:/path/to/file.jsonl` to view a specific file
+  - Matching rows are highlighted with a blue border
 - **Type Filter**: Filter by entry type (user, assistant, tool_result, etc.)
 - **Limit**: Control how many entries to display (50-500)
 - **Refresh**: Manually reload all entries
