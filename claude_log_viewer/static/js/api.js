@@ -5,11 +5,20 @@ import { unpackEntry } from './utils.js';
 import { renderSessionSummary, updateStats } from './sessions.js';
 import { renderFieldSelector, renderEntries, clearFieldExamplesCache } from './entries.js';
 
-// Load initial data
-export async function loadEntries() {
+// Load initial data with optional server-side filters
+export async function loadEntries(filters = {}) {
     try {
-        // Fetch entries (now includes usage snapshots merged by backend)
-        const entriesResponse = await fetch('/api/entries');
+        // Build query params for server-side filtering
+        const params = new URLSearchParams();
+        if (filters.q) params.set('q', filters.q);
+        if (filters.type) params.set('type', filters.type);
+        if (filters.session) params.set('session', filters.session);
+        if (filters.limit) params.set('limit', filters.limit);
+        if (filters.file) params.set('file', filters.file);
+
+        // Fetch entries (filtered by server)
+        const url = params.toString() ? `/api/entries?${params}` : '/api/entries';
+        const entriesResponse = await fetch(url);
         const data = await entriesResponse.json();
 
         // Unpack all entries
