@@ -39,6 +39,7 @@ Issues = "https://github.com/indate/claude-log-viewer/issues"
 
 [project.scripts]
 claude-log-viewer = "claude_log_viewer.app:main"
+claude-log-tools = "claude_log_viewer.cli_tools:main"
 
 [tool.setuptools]
 packages = ["claude_log_viewer"]
