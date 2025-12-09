@@ -49,6 +49,11 @@ latest_entries_lock = threading.Lock()  # Protect against race conditions with f
 max_entries = 500  # Keep last 500 entries in memory (default, configurable via CLI)
 file_age_days = 2  # Only load files modified in last N days (default, configurable via CLI)
 
+# Cache for --all searches (LRU-style, max 5 entries)
+search_cache = {}  # query -> {results: [], timestamp: datetime, files_searched: int}
+search_cache_lock = threading.Lock()
+SEARCH_CACHE_MAX_SIZE = 5
+
 # Cache for usage data
 usage_cache = {
     'data': None,
@@ -493,23 +498,95 @@ def format_usage_snapshot(snapshot):
 
 @app.route('/api/entries')
 def get_entries():
-    """Get latest entries with usage snapshots merged - filtered to active session path"""
+    """Get latest entries with usage snapshots merged.
+
+    Query params:
+        q: Search query (case-insensitive, searches full JSON)
+        type: Filter by entry type (e.g., 'user', 'assistant', 'tool_result')
+        session: Filter by session ID
+        limit: Max entries to return (default: server's --limit setting)
+    """
+    # Get filter params
+    search_query = request.args.get('q', '').strip().lower()
+    type_filter = request.args.get('type', '')
+    session_filter = request.args.get('session', '')
+    file_filter = request.args.get('file', '').strip()
+    limit = min(int(request.args.get('limit', max_entries)), max_entries)
+
+    # If file filter specified, load entries directly from that file
+    if file_filter:
+        all_entries = []
+        file_path = Path(file_filter)
+        if file_path.exists() and file_path.suffix == '.jsonl':
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            entry['_file'] = str(file_path)
+                            entry['_file_path'] = str(file_path)
+                            entry['_line'] = line_num
+                            entry['content_display'] = enrich_content(entry)
+                            tool_items = extract_tool_items(entry)
+                            if tool_items:
+                                entry['tool_items'] = tool_items
+                                if tool_items.get('tool_results'):
+                                    entry['has_tool_results'] = True
+                            all_entries.append(entry)
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                print(f"Error reading file {file_path}: {e}")
+
+        # Apply search filter if provided (for highlighting)
+        # Sort by timestamp
+        all_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        # Mark entries that match the search query
+        if search_query:
+            for entry in all_entries:
+                if search_query in json.dumps(entry).lower():
+                    entry['_search_match'] = True
+
+        all_session_ids = set(e.get('sessionId') for e in all_entries if e.get('sessionId'))
+
+        return jsonify({
+            'entries': all_entries[:limit],
+            'total': len(all_entries),
+            'active_session_count': len(all_session_ids),
+            'total_session_count': len(all_session_ids)
+        })
+
     # Take snapshot of entries (protected by lock)
     with latest_entries_lock:
         entries_snapshot = list(latest_entries)
 
-    # Detect active sessions for fork-aware UI filtering
-    active_session_ids = detect_active_sessions(entries_snapshot)
+    # Start with all entries
+    all_entries = list(entries_snapshot)
 
-    # Filter to show only active conversation path in UI
-    filtered_entries = filter_entries_by_active_sessions(entries_snapshot, active_session_ids)
+    # Track session counts for stats (before filtering)
+    all_session_ids = set(e.get('sessionId') for e in entries_snapshot if e.get('sessionId'))
 
-    # Start with filtered log entries
-    all_entries = list(filtered_entries)
+    # Apply filters (server-side, doesn't block browser)
+    if type_filter:
+        if type_filter == 'tool_result':
+            all_entries = [e for e in all_entries if e.get('has_tool_results')]
+        else:
+            all_entries = [e for e in all_entries if e.get('type') == type_filter]
+
+    if search_query:
+        all_entries = [e for e in all_entries
+                       if search_query in json.dumps(e).lower()]
+
+    if session_filter:
+        all_entries = [e for e in all_entries if e.get('sessionId') == session_filter]
 
     # Get time range from filtered entries
-    if filtered_entries:
-        timestamps = [e.get('timestamp') for e in filtered_entries if e.get('timestamp')]
+    if all_entries:
+        timestamps = [e.get('timestamp') for e in all_entries if e.get('timestamp')]
         if timestamps:
             start_time = min(timestamps)
             end_time = max(timestamps)
@@ -534,17 +611,14 @@ def get_entries():
             # Sort merged list by timestamp (newest first)
             all_entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
 
-            # Limit to max_entries
-            all_entries = all_entries[:max_entries]
-
-    # Calculate session stats for debugging
-    total_sessions = len(set(e.get('sessionId') for e in entries_snapshot if e.get('sessionId')))
+    # Apply limit (from query param)
+    all_entries = all_entries[:limit]
 
     return jsonify({
         'entries': all_entries,
         'total': len(all_entries),
-        'active_session_count': len(active_session_ids),
-        'total_session_count': total_sessions
+        'active_session_count': len(all_session_ids),
+        'total_session_count': len(all_session_ids)
     })
 
 
@@ -559,6 +633,259 @@ def get_fields():
     for entry in entries_snapshot:
         fields.update(entry.keys())
     return jsonify(sorted(list(fields)))
+
+
+def _evict_oldest_cache_entry():
+    """Remove oldest cache entry if cache is full."""
+    if len(search_cache) >= SEARCH_CACHE_MAX_SIZE:
+        oldest_key = min(search_cache.keys(), key=lambda k: search_cache[k]['timestamp'])
+        del search_cache[oldest_key]
+
+
+def _perform_search(query_lower, limit):
+    """Perform the actual file search and return results."""
+    cutoff_time = time.time() - (file_age_days * 24 * 60 * 60)
+    all_files = list(CLAUDE_PROJECTS_DIR.glob('**/*.jsonl'))
+    files = [f for f in all_files if f.stat().st_mtime > cutoff_time]
+
+    results = []
+    files_searched = 0
+
+    for file in files:
+        files_searched += 1
+        try:
+            with open(file, 'r', encoding='utf-8') as f:
+                for line_num, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+
+                    if query_lower not in line.lower():
+                        continue
+
+                    try:
+                        entry = json.loads(line)
+                        entry['_file'] = str(file)
+                        entry['_file_path'] = str(file)
+                        entry['_line'] = line_num
+                        entry['content_display'] = enrich_content(entry)
+
+                        tool_items = extract_tool_items(entry)
+                        if tool_items:
+                            entry['tool_items'] = tool_items
+                            if tool_items.get('tool_results'):
+                                entry['has_tool_results'] = True
+
+                        results.append(entry)
+
+                        if len(results) >= limit:
+                            break
+                    except json.JSONDecodeError:
+                        continue
+        except Exception as e:
+            print(f"Error searching {file}: {e}")
+
+        if len(results) >= limit:
+            break
+
+    # Sort by timestamp (newest first)
+    results.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+    return results, files_searched
+
+
+@app.route('/api/search')
+def search_all_files():
+    """Search all JSONL files directly (bypasses entry limit).
+
+    Query params:
+        q: Search query (required)
+        limit: Max results (default: 100)
+        nocache: Skip cache if 'true'
+    """
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'error': 'Missing search query'}), 400
+
+    limit = min(int(request.args.get('limit', 100)), 200)
+    skip_cache = request.args.get('nocache', '').lower() == 'true'
+    query_lower = query.lower()
+
+    # Check cache first
+    cache_key = f"{query_lower}:{limit}"
+    with search_cache_lock:
+        if not skip_cache and cache_key in search_cache:
+            cached = search_cache[cache_key]
+            # Update timestamp (LRU behavior)
+            cached['timestamp'] = time.time()
+            return jsonify({
+                'entries': cached['results'],
+                'total': len(cached['results']),
+                'files_searched': cached['files_searched'],
+                'query': query,
+                'limit': limit,
+                'truncated': len(cached['results']) >= limit,
+                'cached': True
+            })
+
+    # Perform search
+    results, files_searched = _perform_search(query_lower, limit)
+
+    # Store in cache
+    with search_cache_lock:
+        _evict_oldest_cache_entry()
+        search_cache[cache_key] = {
+            'results': results,
+            'files_searched': files_searched,
+            'timestamp': time.time()
+        }
+
+    return jsonify({
+        'entries': results,
+        'total': len(results),
+        'files_searched': files_searched,
+        'query': query,
+        'limit': limit,
+        'truncated': len(results) >= limit,
+        'cached': False
+    })
+
+
+@app.route('/api/search/stream')
+def search_all_files_stream():
+    """Search all JSONL files with streaming results.
+
+    Query params:
+        q: Search query (required)
+        limit: Max results (default: 100)
+
+    Returns NDJSON stream with:
+        {"type": "progress", "files_searched": N}
+        {"type": "result", "entry": {...}}
+        {"type": "done", "total": N, "files_searched": N, "truncated": bool, "cached": bool}
+    """
+    from flask import Response, stream_with_context
+
+    query = request.args.get('q', '').strip()
+    if not query:
+        return jsonify({'error': 'Missing search query'}), 400
+
+    limit = min(int(request.args.get('limit', 100)), 200)
+    query_lower = query.lower()
+
+    # Check cache first
+    cache_key = f"{query_lower}:{limit}"
+    with search_cache_lock:
+        if cache_key in search_cache:
+            cached = search_cache[cache_key]
+            # Update timestamp (LRU behavior)
+            cached['timestamp'] = time.time()
+
+            # Return cached results as stream format
+            def generate_cached():
+                for entry in cached['results']:
+                    yield json.dumps({'type': 'result', 'entry': entry}) + '\n'
+                yield json.dumps({
+                    'type': 'done',
+                    'total': len(cached['results']),
+                    'files_searched': cached['files_searched'],
+                    'query': query,
+                    'limit': limit,
+                    'truncated': len(cached['results']) >= limit,
+                    'cached': True
+                }) + '\n'
+
+            return Response(
+                stream_with_context(generate_cached()),
+                mimetype='application/x-ndjson',
+                headers={'X-Accel-Buffering': 'no'}
+            )
+
+    def generate():
+        # Get all JSONL files modified in last N days
+        cutoff_time = time.time() - (file_age_days * 24 * 60 * 60)
+        all_files = list(CLAUDE_PROJECTS_DIR.glob('**/*.jsonl'))
+        files = [f for f in all_files if f.stat().st_mtime > cutoff_time]
+
+        results_for_cache = []
+        files_searched = 0
+
+        for file in files:
+            files_searched += 1
+
+            # Send progress every 10 files
+            if files_searched % 10 == 0:
+                yield json.dumps({'type': 'progress', 'files_searched': files_searched}) + '\n'
+
+            try:
+                with open(file, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+
+                        # Quick case-insensitive check before JSON parsing
+                        if query_lower not in line.lower():
+                            continue
+
+                        try:
+                            entry = json.loads(line)
+                            # Add file metadata
+                            entry['_file'] = str(file)
+                            entry['_file_path'] = str(file)
+                            entry['_line'] = line_num
+
+                            # Enrich content for display
+                            entry['content_display'] = enrich_content(entry)
+
+                            # Extract tool items
+                            tool_items = extract_tool_items(entry)
+                            if tool_items:
+                                entry['tool_items'] = tool_items
+                                if tool_items.get('tool_results'):
+                                    entry['has_tool_results'] = True
+
+                            results_for_cache.append(entry)
+                            yield json.dumps({'type': 'result', 'entry': entry}) + '\n'
+
+                            if len(results_for_cache) >= limit:
+                                break
+                        except json.JSONDecodeError:
+                            continue
+            except Exception as e:
+                print(f"Error searching {file}: {e}")
+
+            if len(results_for_cache) >= limit:
+                break
+
+        # Sort results for cache
+        results_for_cache.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+
+        # Store in cache
+        with search_cache_lock:
+            _evict_oldest_cache_entry()
+            search_cache[cache_key] = {
+                'results': results_for_cache,
+                'files_searched': files_searched,
+                'timestamp': time.time()
+            }
+
+        # Send final summary
+        yield json.dumps({
+            'type': 'done',
+            'total': len(results_for_cache),
+            'files_searched': files_searched,
+            'query': query,
+            'limit': limit,
+            'truncated': len(results_for_cache) >= limit,
+            'cached': False
+        }) + '\n'
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype='application/x-ndjson',
+        headers={'X-Accel-Buffering': 'no'}  # Disable nginx buffering
+    )
 
 
 @app.route('/api/refresh')
@@ -1585,6 +1912,11 @@ def main():
         type=str,
         help='Target specific project directory (isolates JSONL processing and git operations)'
     )
+    parser.add_argument(
+        '--skip-backfill',
+        action='store_true',
+        help='Skip the backfill process on startup (faster restart, but usage stats may be incomplete)'
+    )
     args = parser.parse_args()
 
     # Set global configuration from arguments
@@ -1656,11 +1988,16 @@ def main():
         print("Backfill will run automatically to recalculate...")
 
     # Check for NULL snapshots and start backfill if needed
-    print("Checking for NULL usage snapshots...")
-    null_counts = check_null_snapshots()
     backfill_cutoff_time = None  # Track when backfill completed
 
-    if null_counts['total_nulls'] > 0:
+    if args.skip_backfill:
+        print("⏭ Skipping backfill (--skip-backfill flag set)")
+        print("  Usage stats may be incomplete until next full startup")
+    else:
+        print("Checking for NULL usage snapshots...")
+        null_counts = check_null_snapshots()
+
+    if not args.skip_backfill and null_counts['total_nulls'] > 0:
         print(f"⚠ Found {null_counts['total_nulls']} snapshots with NULL calculated fields")
         print(f"  - 5-hour window: {null_counts['five_hour_nulls']} snapshots")
         print(f"  - 7-day window: {null_counts['seven_day_nulls']} snapshots")
@@ -1699,7 +2036,7 @@ def main():
         except Exception as e:
             print(f"✗ Backfill error: {e}")
             print("⚠ Server will start but fork data may be incomplete")
-    else:
+    elif not args.skip_backfill:
         print("✓ All snapshots have calculated values - no backfill needed")
 
     # Initial load
