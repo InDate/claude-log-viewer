@@ -150,6 +150,63 @@ tr:hover {
     margin-bottom: 10px;
 }
 
+.search-all-btn {
+    margin-top: 20px;
+    padding: 12px 24px;
+    font-size: 14px;
+    background: #0969da;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-family: inherit;
+    transition: background 0.2s;
+}
+
+.search-all-btn:hover {
+    background: #0860c4;
+}
+
+.search-all-hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: #6e7681;
+}
+
+.search-results-header {
+    padding: 15px 20px;
+    border-bottom: 1px solid #30363d;
+    background: #161b22;
+}
+
+.search-results-header h3 {
+    margin: 0;
+    font-size: 14px;
+    color: #58a6ff;
+}
+
+.search-truncated-warning {
+    margin-top: 5px;
+    font-size: 12px;
+    color: #f0883e;
+}
+
+.search-progress {
+    margin-top: 5px;
+    font-size: 12px;
+    color: #8b949e;
+}
+
+/* Highlight rows that match search query */
+tr.search-match {
+    background-color: rgba(56, 139, 253, 0.15) !important;
+    border-left: 3px solid #388bfd;
+}
+
+tr.search-match:hover {
+    background-color: rgba(56, 139, 253, 0.25) !important;
+}
+
 .loading {
     text-align: center;
     padding: 40px;
